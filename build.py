@@ -13,8 +13,9 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("__main__.py", "from camera_test import main\nraise SystemExit(main())\n")
-        for name in ("camera_test.py", "camera_checks.py", "camera_hal.py"):
-            archive.write(root / name, name)
+        archive.write(root / "camera_test.py", "camera_test.py")
+        for module in sorted((root / "camera_runner").rglob("*.py")):
+            archive.write(module, module.relative_to(root).as_posix())
     print(output.resolve())
 
 

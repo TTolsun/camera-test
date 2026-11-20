@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import camera_test
+from camera_runner import adb
 
 
 OFF = """--------- beginning of main
@@ -40,7 +41,7 @@ class HalCommandTests(unittest.TestCase):
         return code, json.loads(stdout.getvalue())
 
     def compare(self, *arguments):
-        with patch.object(camera_test, "adb", side_effect=AssertionError("compare tried to use ADB")):
+        with patch.object(adb, "adb", side_effect=AssertionError("compare tried to use ADB")):
             return self.cli("compare", "--off", self.off, "--on", self.on, *arguments)
 
     def test_compare_summarizes_tags_and_messages(self):
@@ -97,7 +98,7 @@ class HalCommandTests(unittest.TestCase):
             queries.append(remote)
             return {stamp_off: OFF, stamp_on: ON}[remote[3]]
 
-        with patch.object(camera_test, "adb", side_effect=mock_adb):
+        with patch.object(adb, "adb", side_effect=mock_adb):
             code, off = self.cli("begin", "--state", "off", "--output-dir", self.root)
             self.assertEqual((code, off["since"]), (0, stamp_off))
             code, off_log = self.cli("collect", "--trial", off["trial"])
@@ -110,7 +111,7 @@ class HalCommandTests(unittest.TestCase):
         self.assertEqual(queries[0][12:], [])
         self.assertEqual(queries[1][12:], ["ExampleSession:V", "ExampleExynosTag:V", "*:S"])
 
-        with patch.object(camera_test, "adb", side_effect=AssertionError("collected trial queried ADB")):
+        with patch.object(adb, "adb", side_effect=AssertionError("collected trial queried ADB")):
             self.assertEqual(self.cli("collect", "--trial", on["trial"]), (0, on_log))
             code, compared = self.cli("compare", "--off", off_log["logcat"], "--on", on_log["logcat"],
                                       "--tag", "ExampleExynosTag", "--expect-log", "example_applied=1")

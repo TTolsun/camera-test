@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from camera_checks import LOG_CLOCK_PATTERN, LOG_LINE, LOG_TAG_PATTERN
+from .logcat import LOG_CLOCK_PATTERN, LOG_LINE, LOG_TAG_PATTERN
 
 
 SUMMARY_LIMIT = 10

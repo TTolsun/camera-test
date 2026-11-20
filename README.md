@@ -49,13 +49,13 @@ python camera_test.py run galaxy.portrait-video --check my-feature --checks-file
 
 ## Agent와 배포
 
-저장소에는 `AGENTS.md`와 다음 스킬이 포함됩니다. Agent는 저장소의 CLI를 셸에서 호출합니다. Agent가 원격에서 실행될 경우, 실제 명령을 단말이 연결된 PC에서 실행하는 사내 도구에 연결합니다.
+스킬은 `SKILLS/`에 모여 있으며, Agent는 `AGENTS.md`에서 작업에 맞는 스킬 경로를 찾을 수 있습니다. Agent는 저장소의 CLI를 셸에서 호출합니다. Agent가 원격에서 실행될 경우, 실제 명령을 단말이 연결된 PC에서 실행하는 사내 도구에 연결합니다.
 
 | 스킬 | 쓰는 경우 |
 |---|---|
-| [camera-test](.agents/skills/camera-test/SKILL.md) | 지원 모드를 확인하고 등록된 시나리오를 실행합니다. |
-| [camera-ui-diagnostics](.agents/skills/camera-ui-diagnostics/SKILL.md) | 새 앱이나 모드를 조사하고, UI 변경으로 깨진 선택자를 수정합니다. |
-| [android-cli](.agents/skills/android-cli/SKILL.md) | Android SDK와 기기 상태를 조사할 때 참고합니다. 원본과 라이선스를 함께 제공합니다. [Android 공식 소스](https://github.com/android/skills/tree/c72942584fff970dac86ced78b367fce0c441e52/devtools/android-cli) · [Apache 2.0 라이선스](.agents/skills/android-cli/LICENSE.txt) |
+| [camera-test](SKILLS/camera-test/SKILL.md) | 지원 모드를 확인하고 등록된 시나리오를 실행합니다. |
+| [camera-ui-diagnostics](SKILLS/camera-ui-diagnostics/SKILL.md) | 새 앱이나 모드를 조사하고, UI 변경으로 깨진 선택자를 수정합니다. |
+| [android-cli](SKILLS/android-cli/SKILL.md) | Android SDK와 기기 상태를 조사할 때 참고합니다. 원본과 라이선스를 함께 제공합니다. [Android 공식 소스](https://github.com/android/skills/tree/c72942584fff970dac86ced78b367fce0c441e52/devtools/android-cli) · [Apache 2.0 라이선스](SKILLS/android-cli/LICENSE.txt) |
 
 저장소 루트의 `camera-test.pyz`는 표준 라이브러리만 사용합니다. 소스에서 실행하려면 `python camera_test.py`에 같은 하위 명령을 전달합니다. 소스를 수정한 뒤에는 아래 명령으로 함께 배포하는 실행 파일을 갱신할 수 있습니다.
 
@@ -63,3 +63,10 @@ python camera_test.py run galaxy.portrait-video --check my-feature --checks-file
 python build.py camera-test.pyz
 python camera-test.pyz inspect --pretty
 ```
+
+## 저장소 구조
+
+- `camera_test.py`와 `camera-test.pyz`는 저장소 루트에서 실행합니다.
+- `camera_runner/adb.py`는 기기 선택과 ADB 통신, UI 덤프, 로그 수집을 담당합니다.
+- `camera_runner/scenarios/`는 앱별 촬영과 판정을 담당합니다. 이 폴더의 등록 목록을 `list`, `inspect`, `run`이 함께 사용합니다. 새 시나리오는 구현을 추가하고 `camera_runner/scenarios/__init__.py`에 등록합니다.
+- `camera_runner/checks.py`와 `camera_runner/hal.py`는 각각 검사 정의와 HAL 로그 수집·비교를 담당합니다.
