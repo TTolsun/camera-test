@@ -28,7 +28,7 @@ python camera-test.pyz run galaxy.portrait-video --duration 5
 
 ## Qualcomm과 Exynos의 HAL 검사 등록
 
-Exynos 실기기에서 검사 근거를 처음 확보할 때는 [ON/OFF 로그 수집 및 검사 작성 절차](docs/exynos-hal-validation.md)를 따릅니다.
+`hal begin`과 `hal collect`로 기능 OFF·ON 각각의 로그를 저장하고, `hal compare`로 태그별 차이 또는 적용 패턴을 확인합니다. `hal compare`는 저장된 `threadtime` 로그만 사용합니다. [ON/OFF 로그 수집 및 검사 작성 절차](docs/exynos-hal-validation.md)
 
 [checks.example.json](checks.example.json)의 예시 태그와 패턴을 팀 빌드에서 실제 동작을 보여 주는 값으로 바꿉니다. 동일한 검사 이름에 `vendor`를 `exynos` 또는 `qualcomm`으로 지정해 별도 정의를 등록할 수 있습니다. 앱 로그 검사는 `source`를 `app`으로 지정하고 `vendor` 필드를 생략합니다.
 

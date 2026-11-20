@@ -15,20 +15,20 @@ import time
 from uuid import uuid4
 from xml.etree import ElementTree
 
-from camera_checks import load_checks, resolve_check
+from camera_checks import LOG_CLOCK_PATTERN, LOG_LINE, load_checks, resolve_check
+from camera_hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
 
 
 PACKAGE = "com.sec.android.app.camera"
 ACTIVITY = f"{PACKAGE}/.Camera"
 SCENARIO = "galaxy.portrait-video"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 # The stop gesture and RecordingManager messages were confirmed on this app build.
 CAMERA_VERSION = "17.0.00.43"
 MODE_TEXT = {"인물 동영상", "portrait video"}
 MORE_TEXT = {"더보기", "more"}
 START_TEXT = {"녹화 시작", "start recording", "record video"}
 LOG_TAGS = ("RecordingManager", "CameraService", "Camera3-Device", "MediaRecorder", "MPEG4Writer")
-LOG_LINE = re.compile(r"^\S+\s+\S+\s+(\d+)\s+\d+\s+[VDIWEFAS]\s+([^:]+?)\s*:\s*(.*)$")
 RECORD_STATE = re.compile(r"changeRecordingState\s*:\s*(\w+)\s*->\s*(\w+)")
 
 
@@ -140,14 +140,15 @@ class Device:
 
     def clock(self):
         stamp = self.shell("date", "+%m-%d %H:%M:%S.%3N")
-        if not re.fullmatch(r"\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}", stamp):
+        if not LOG_CLOCK_PATTERN.fullmatch(stamp):
             raise RunError("DEVICE_CLOCK", "Could not read a logcat timestamp from the device.")
         return stamp
 
     def logs(self, since, tags):
+        filters = [*(f"{tag}:V" for tag in tags), "*:S"] if tags else []
         return self.shell(
             "logcat", "-d", "-T", since, "-v", "threadtime", "-b", "main", "-b", "system",
-            "-b", "crash", *(f"{tag}:V" for tag in tags), "*:S"
+            "-b", "crash", *filters
         )
 
     def videos(self):
@@ -532,6 +533,25 @@ def read_checks(path):
         raise RunError("INVALID_CHECKS_FILE", f"Check definition could not be read: {exc}") from exc
 
 
+def run_hal(args):
+    if args.hal_command == "compare":
+        return compare_logs(args)
+    if args.hal_command == "begin":
+        tags = log_tags(args.tag)
+        serial = select_device(args.device)
+        device = Device(serial, uuid4().hex[:12])
+        return begin_trial(args.output_dir, args.state, serial, device.clock(), tags), 0
+
+    trial = load_trial(args.trial)
+    if trial.log.is_file():
+        return collected_trial(trial), 0
+    device = Device(select_device(trial.serial), uuid4().hex[:12])
+    with device_lock(device.shell("getprop", "ro.serialno") or trial.serial):
+        if not trial.log.is_file():
+            save_trial_logs(trial, device.logs(trial.since, trial.tags))
+        return collected_trial(trial), 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run repeatable camera scenarios on an ADB device.")
     parser.add_argument("--version", action="version", version=VERSION)
@@ -542,6 +562,22 @@ def main():
     inspection.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
     inspection.add_argument("--no-ui", action="store_true", help="Read device and camera service information without opening Camera.")
     inspection.add_argument("--pretty", action="store_true", help="Indent inspection JSON for terminal reading.")
+    hal = commands.add_parser("hal", help="Capture and compare Camera HAL logcat trials.")
+    hal_commands = hal.add_subparsers(dest="hal_command", required=True)
+    begin = hal_commands.add_parser("begin", help="Mark the start of an OFF or ON trial.")
+    begin.add_argument("--state", choices=("off", "on"), required=True)
+    begin.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
+    begin.add_argument("--output-dir", type=Path, default=Path("runs/exynos-hal"))
+    begin.add_argument("--tag", action="append", default=[], help="Limit collection to a tag. Repeat for more tags.")
+    collect = hal_commands.add_parser("collect", help="Save logcat from a marked trial.")
+    collect.add_argument("--trial", type=Path, required=True, help="Trial JSON path emitted by hal begin.")
+    compare = hal_commands.add_parser("compare", help="Compare two saved threadtime logs without ADB.")
+    compare.add_argument("--off", type=Path, required=True)
+    compare.add_argument("--on", type=Path, required=True)
+    compare.add_argument("--tag", help="Compare message counts for a single tag.")
+    compare.add_argument("--expect-log", help="Regular expression expected in ON messages for --tag.")
+    compare.add_argument("--control-tag", help="Tag for a signal expected in both trials.")
+    compare.add_argument("--control-log", help="Message regular expression expected in both trials.")
     command = commands.add_parser("run", help="Run a camera scenario and emit a short JSON result.")
     command.add_argument("scenario", choices=[SCENARIO])
     command.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
@@ -554,6 +590,14 @@ def main():
     if args.command == "list":
         print(json.dumps([SCENARIO]))
         return 0
+    if args.command == "hal":
+        try:
+            result, exit_code = run_hal(args)
+        except (HalError, RunError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            exit_code = 1
+        print(json.dumps(result))
+        return exit_code
     if args.command == "inspect":
         try:
             result = inspect_device(args, read_checks(args.checks_file))

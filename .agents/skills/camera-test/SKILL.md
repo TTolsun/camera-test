@@ -12,4 +12,4 @@ description: Discover available camera modes and run repeatable Galaxy camera ch
 3. 특정 기능을 확인하려면 `--check <name>`과 팀 검사 파일 경로를 사용합니다. `checks.registered_for_device`에서 현재 SoC에 적용되는 정의를 확인합니다. 검사 파일은 `--checks-file <path>`로 전달합니다. 결과가 `UNVERIFIED`이면 `feature.reason`을 보고합니다. HAL 검사 정의 형식은 저장소 루트의 `README.md`에 있습니다.
 4. JSON의 `scenario_status`와 `feature.status`를 각각 전달하고 실행 ID와 로그 경로를 알려 줍니다. 실패 분석에는 관련 로그 구간을 읽습니다. `recording_may_be_active`가 `true`이면 재실행 전에 단말의 녹화 상태를 확인합니다.
 
-Exynos용 HAL 검사 근거가 아직 없으면 저장소의 [ON/OFF 로그 수집 절차](../../../docs/exynos-hal-validation.md)를 사용합니다.
+Exynos용 HAL 검사 근거가 필요하면, 각 상태를 팀 절차로 적용한 뒤 `hal begin --state off|on`의 `trial` 경로를 보관합니다. 촬영 후 `hal collect --trial <path>`의 `logcat` 경로를 `hal compare --off <path> --on <path>`에 전달합니다. 새 검사 정의로 등록하기 전에 기능 적용 신호를 `--tag`와 `--expect-log`로 비교합니다. 양쪽 촬영이 기록됐는지는 `--control-tag`와 `--control-log`로 확인합니다. 인자와 예시는 [ON/OFF 로그 수집 절차](../../../docs/exynos-hal-validation.md)에 있습니다.

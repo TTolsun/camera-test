@@ -14,46 +14,36 @@ python camera-test.pyz inspect --device $serial --pretty
 
 ## 2. OFF와 ON에서 같은 동작을 재현합니다
 
-아래 함수를 저장소 루트에서 한 번 정의합니다. 매번 기능 상태를 설정한 뒤 `Save-HalTrial`을 호출하고, 기기에서 같은 촬영 동작을 끝낸 다음 Enter를 누릅니다. 테스트 구간의 `main`, `system`, `crash` 버퍼가 로컬 파일에 저장됩니다. [Android logcat 문서](https://developer.android.com/tools/logcat)
+각 상태를 설정한 뒤 `hal begin`으로 기기 시각과 실험 정보를 기록합니다. 촬영 동작이 끝나면 `hal collect`를 바로 호출합니다. Agent는 두 명령 사이에 등록된 촬영 시나리오를 실행할 수 있습니다. 팀의 기능 설정 절차와 수동 촬영 동작도 같은 구간에 연결할 수 있습니다. `--state`는 실험의 상태를 기록합니다. 실제 설정은 팀의 개발 절차에서 적용합니다.
 
 ```powershell
-$trialDir = Join-Path 'runs/exynos-hal' (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
-New-Item -ItemType Directory -Path $trialDir -Force | Out-Null
+# 기능을 OFF로 설정합니다.
+$off = python camera-test.pyz hal begin --device $serial --state off | ConvertFrom-Json
+# 같은 시작 화면에서 촬영합니다. 인물 동영상 예시입니다.
+python camera-test.pyz run galaxy.portrait-video --device $serial --duration 5
+$offLog = python camera-test.pyz hal collect --trial $off.trial | ConvertFrom-Json
 
-function Save-HalTrial {
-    param([Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]+$')][string]$Trial)
-
-    $logPath = Join-Path $trialDir "$Trial.log"
-    if (Test-Path -LiteralPath $logPath) { throw "Trial already captured: $Trial" }
-
-    $since = & adb -s $serial shell 'date "+%m-%d %H:%M:%S.%3N"'
-    if ($LASTEXITCODE -ne 0 -or "$since" -notmatch '^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$') {
-        throw 'Could not read the device clock.'
-    }
-
-    Read-Host 'Reproduce the camera action on the device, then press Enter' | Out-Null
-    $lines = & adb -s $serial shell "logcat -d -T '$since' -v threadtime -b main -b system -b crash"
-    if ($LASTEXITCODE -ne 0 -or -not $lines) { throw 'Could not capture logcat.' }
-    $lines | Set-Content -LiteralPath $logPath -Encoding utf8
-    Get-Item -LiteralPath $logPath
-}
-
-Read-Host 'Set the feature to OFF and prepare the start screen, then press Enter' | Out-Null
-Save-HalTrial -Trial 'off-01'
-Read-Host 'Set the feature to ON and prepare the same start screen, then press Enter' | Out-Null
-Save-HalTrial -Trial 'on-01'
+# 기능을 ON으로 설정합니다.
+$on = python camera-test.pyz hal begin --device $serial --state on | ConvertFrom-Json
+python camera-test.pyz run galaxy.portrait-video --device $serial --duration 5
+$onLog = python camera-test.pyz hal collect --trial $on.trial | ConvertFrom-Json
 ```
 
-두 파일에서 촬영 요청이나 세션 시작처럼 **양쪽 실행이 모두 기록됐음을 보여 주는 공통 신호**를 먼저 확인합니다. 이어 실제 기능 적용을 나타내는 태그와 메시지를 찾습니다. 후보 태그가 있으면 `Select-String`으로 좁혀 비교합니다.
+상태 변경 지점에서 다음 명령을 따로 실행합니다. `begin`은 `trial` 경로를, `collect`는 `logcat` 경로와 로그 레코드 수를 JSON으로 반환합니다. 로그는 `main`, `system`, `crash` 버퍼에서 읽어 기본적으로 `runs/exynos-hal/`에 저장합니다. 태그를 알고 있다면 두 `begin` 명령에 같은 `--tag` 목록을 넘길 수 있습니다. 기능 태그와 함께 세션 시작 등 촬영이 기록됐음을 보여 주는 태그도 포함합니다. [Android logcat 문서](https://developer.android.com/tools/logcat)
+
+태그별 로그 건수 차이를 먼저 보고, 관심 태그를 지정해 메시지별로 확인합니다. 예시 태그는 해당 기기에서 관찰한 값으로 바꿉니다. `hal compare`는 저장한 `threadtime` 로그를 읽기 때문에 기기 없이도 실행할 수 있습니다.
 
 ```powershell
-$tag = 'REPLACE_WITH_OBSERVED_TAG'
-$tagPattern = '^\S+\s+\S+\s+\d+\s+\d+\s+[VDIWEFAS]\s+' + [regex]::Escape($tag) + '\s*:'
-Select-String -LiteralPath (Join-Path $trialDir 'off-01.log') -Pattern $tagPattern -CaseSensitive
-Select-String -LiteralPath (Join-Path $trialDir 'on-01.log') -Pattern $tagPattern -CaseSensitive
+python camera-test.pyz hal compare --off $offLog.logcat --on $onLog.logcat
+python camera-test.pyz hal compare --off $offLog.logcat --on $onLog.logcat --tag ExampleExynosTag
+python camera-test.pyz hal compare --off $offLog.logcat --on $onLog.logcat `
+    --tag ExampleExynosTag --expect-log '\bexample_applied=1\b' `
+    --control-tag ExampleSession --control-log '^session_started$'
 ```
 
-`off-02`, `on-02`처럼 새 이름으로 한 번 더 비교합니다. 기능 설정값을 출력하는 메시지보다 요청이나 프레임에 기능이 적용됐음을 보여 주는 메시지를 사용하고, PID·프레임 번호처럼 실행마다 바뀌는 값은 패턴에서 제외합니다. 공통 신호가 없으면 수집 구간과 빌드의 로그 설정을 먼저 확인합니다. OFF에서 로그 한 줄이 보이지 않는다는 사실만으로는 기능 상태를 판정하기 어렵습니다.
+`--expect-log`는 실제 기능 적용 메시지를 찾습니다. `--control-tag`와 `--control-log`를 함께 지정하면 촬영 신호가 양쪽 로그에 있어야 `ON_ONLY`가 나옵니다. 비교 종료 코드 `0`은 요약 완료 또는 `ON_ONLY`, `2`는 그 밖의 비교 결과, `1`은 입력이나 처리 오류를 나타냅니다. `CONTROL_MISSING`은 수집 구간과 빌드의 로그 설정을 확인해야 한다는 뜻입니다.
+
+새 OFF·ON 실험을 만들어 한 번 더 확인합니다. 기능 설정값을 출력하는 메시지보다 요청이나 프레임에 기능이 적용됐음을 보여 주는 메시지를 사용하고, PID·프레임 번호처럼 실행마다 바뀌는 값은 패턴에서 제외합니다.
 
 ## 3. 검사 정의를 등록하고 재실행합니다
 

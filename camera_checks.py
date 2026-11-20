@@ -3,6 +3,11 @@ import json
 import re
 
 
+LOG_TAG_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
+LOG_CLOCK_PATTERN = re.compile(r"\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}")
+LOG_LINE = re.compile(r"^\S+\s+\S+\s+(\d+)\s+\d+\s+[VDIWEFAS]\s+([^:]+?)\s*:\s*(.*)$")
+
+
 @dataclass(frozen=True)
 class LogCheck:
     name: str
@@ -25,7 +30,7 @@ def load_checks(path):
         name, source, tag = (entry[key] for key in ("name", "source", "tag"))
         vendor = entry.get("vendor")
         pattern = entry["expect_log"]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or not re.fullmatch(r"[A-Za-z0-9_.-]+", tag):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or not LOG_TAG_PATTERN.fullmatch(tag):
             raise ValueError("Invalid check name or log tag.")
         if source == "hal":
             if vendor not in ("exynos", "qualcomm"):

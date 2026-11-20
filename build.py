@@ -13,7 +13,7 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("__main__.py", "from camera_test import main\nraise SystemExit(main())\n")
-        for name in ("camera_test.py", "camera_checks.py"):
+        for name in ("camera_test.py", "camera_checks.py", "camera_hal.py"):
             archive.write(root / name, name)
     print(output.resolve())
 
