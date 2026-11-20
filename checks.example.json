@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "checks": [
+    {
+      "name": "example-feature",
+      "source": "hal",
+      "vendor": "exynos",
+      "tag": "ExampleExynosTag",
+      "expect_log": "example_applied=true"
+    },
+    {
+      "name": "example-feature",
+      "source": "hal",
+      "vendor": "qualcomm",
+      "tag": "ExampleQualcommTag",
+      "expect_log": "exampleApplied=1"
+    }
+  ]
+}
