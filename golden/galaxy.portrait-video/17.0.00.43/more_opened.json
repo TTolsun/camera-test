@@ -1,0 +1,451 @@
+{
+  "schema_version": 1,
+  "checkpoint": "more_opened",
+  "package": "com.sec.android.app.camera",
+  "nodes": [
+    {
+      "resource-id": "action_bar_root",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.LinearLayout"
+    },
+    {
+      "resource-id": "android:id/content",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "app_content_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "base_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "fragment_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "layer_manager_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "touch_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "popup_layer_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "pro_expanded_panel_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "layer_shooting_mode_overlay",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "key_screen_layer",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_indicator_sub_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "bottom_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "shooting_mode_list",
+      "text": "",
+      "content-desc": "더보기, 모드",
+      "class": "android.widget.SeekBar"
+    },
+    {
+      "resource-id": "shooting_mode_item_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_item_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_item",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "shooting_mode_item_button",
+      "text": "사진",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_button_full",
+      "text": "사진",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_item",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "shooting_mode_item_button",
+      "text": "동영상",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_button_full",
+      "text": "동영상",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_item",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "shooting_mode_item_button",
+      "text": "야간",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_button_full",
+      "text": "야간",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "shooting_mode_item",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "shooting_mode_item_button",
+      "text": "더보기",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "shooting_mode_item_button_full",
+      "text": "더보기",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "preview_animation_layer",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "animation_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "black_surface",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.SurfaceView"
+    },
+    {
+      "resource-id": "menu_layer_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "chooser_menu",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "more_top_edit_mode_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_top_normal_mode_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_top_edit_button_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_top_edit_button",
+      "text": "편집",
+      "content-desc": "",
+      "class": "android.widget.Button"
+    },
+    {
+      "resource-id": "more_top_bixby_button_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_top_bixby_button",
+      "text": "",
+      "content-desc": "빅스비 비전",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_top_button_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_view_bg",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "more_grid_list_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.GridView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "download_badge",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "EXPERT RAW",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "프로",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "new_badge",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "프로 동영상",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "음식",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "파노라마",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "슬로우 모션",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "하이퍼랩스",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "more_grid_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "more_grid_list_icon",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "more_grid_list_text",
+      "text": "인물 동영상",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "grid_drag_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "camera_preview",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.SurfaceView"
+    }
+  ]
+}

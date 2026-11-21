@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scenario": "galaxy.portrait-video",
+  "app_version": "17.0.00.43",
+  "profile_source": "built-in",
+  "created": "2026-11-21T14:15:35+00:00",
+  "checkpoints": [
+    "initial",
+    "initial_in_mode",
+    "mode_ready",
+    "more_opened"
+  ]
+}

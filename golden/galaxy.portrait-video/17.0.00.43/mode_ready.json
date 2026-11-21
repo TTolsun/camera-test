@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "checkpoint": "mode_ready",
+  "package": "com.sec.android.app.camera",
+  "nodes": [
+    {
+      "resource-id": "action_bar_root",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.LinearLayout"
+    },
+    {
+      "resource-id": "android:id/content",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "app_content_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "base_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "fragment_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "layer_manager_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "touch_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "menu_layer_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "popup_layer_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "pro_expanded_panel_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "layer_shooting_mode_overlay",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "floating_shutter_container",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "key_screen_layer",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_indicator_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_indicator_list",
+      "text": "",
+      "content-desc": "",
+      "class": "androidx.recyclerview.widget.RecyclerView"
+    },
+    {
+      "resource-id": "quick_setting_button_main",
+      "text": "",
+      "content-desc": "플래시",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_button_image",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "quick_setting_button_main",
+      "text": "BACK_PORTRAIT_VIDEO_RESOLUTION_FHD",
+      "content-desc": "동영상 크기",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_button_image",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "quick_setting_button_main",
+      "text": "",
+      "content-desc": "Bar",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_button_image",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "quick_setting_button_main",
+      "text": "",
+      "content-desc": "HDR",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_button_image",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "quick_setting_indicator_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_indicator_sub_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_list_wrapper",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_setting_entry_button",
+      "text": "",
+      "content-desc": "퀵 컨트롤",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "quick_setting_entry_button_image",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "quick_setting_list_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "zoom_button_list_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "zoom_button_list_background_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "top_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "bottom_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "zoom_button_list",
+      "text": "",
+      "content-desc": "",
+      "class": "androidx.recyclerview.widget.RecyclerView"
+    },
+    {
+      "resource-id": "zoom_lens_text_button_main",
+      "text": "와이드 렌즈",
+      "content-desc": "줌 1, 버튼",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "zoom_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "zoom_button_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "top_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "bottom_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "zoom_focus_text",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.LinearLayout"
+    },
+    {
+      "resource-id": "zoom_button_text",
+      "text": "1",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "zoom_button_x",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "zoom_lens_text_button_main",
+      "text": "와이드 렌즈",
+      "content-desc": "줌 2, 버튼",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "zoom_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "zoom_normal_text",
+      "text": "2",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "dummy_slider_wrapper_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "indicator",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "indicator_layout",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "bottom_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "left_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "quick_view_button_layout",
+      "text": "",
+      "content-desc": "사진 및 동영상 보기",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "stroke_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "ripple_effect_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "center_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "center_button_container",
+      "text": "",
+      "content-desc": "녹화 시작",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "normal_center_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "right_button",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "switch_camera_button",
+      "text": "",
+      "content-desc": "전면 카메라로 전환",
+      "class": "android.widget.ImageButton"
+    },
+    {
+      "resource-id": "right_button_bg",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "top_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "bottom_background",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "shooting_mode_list_area",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "instant_mode_back_button",
+      "text": "",
+      "content-desc": "뒤로가기",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "instant_mode_title",
+      "text": "인물 동영상",
+      "content-desc": "",
+      "class": "android.widget.TextView"
+    },
+    {
+      "resource-id": "shooting_mode_layer",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "shooting_mode_portrait_video_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "effect_button",
+      "text": "",
+      "content-desc": "인물 동영상 효과",
+      "class": "android.widget.ImageButton"
+    },
+    {
+      "resource-id": "pet_face_group_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "face_group_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "ae_af",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "guide_line_view",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "line_x1",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "line_x2",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "line_y1",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "level_meter",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.RelativeLayout"
+    },
+    {
+      "resource-id": "level_meter_guide",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "level_meter_target_bg",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "level_meter_target",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.ImageView"
+    },
+    {
+      "resource-id": "line_y2",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.View"
+    },
+    {
+      "resource-id": "preview_animation_layer",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "animation_main",
+      "text": "",
+      "content-desc": "",
+      "class": "android.widget.FrameLayout"
+    },
+    {
+      "resource-id": "blur_image_container",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.ViewGroup"
+    },
+    {
+      "resource-id": "camera_preview",
+      "text": "",
+      "content-desc": "",
+      "class": "android.view.SurfaceView"
+    }
+  ]
+}
