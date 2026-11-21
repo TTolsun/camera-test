@@ -38,6 +38,15 @@ PROFILE = {
 }
 
 
+# Selector keys each phase relies on. `execute` moves `device.phase` through these names.
+PHASES = {
+    "launch": (),
+    "mode_select": ("mode_button", "more_grid_item"),
+    "mode_ready": ("mode_ready", "record_button"),
+    "recording": (),  # The UI is never dumped while recording.
+}
+
+
 def wait_for(probe, timeout, code, message, interval=0.25):
     deadline = time.monotonic() + timeout
     while True:
@@ -73,6 +82,7 @@ def portrait_ready(root, profile):
 
 
 def launch_camera(device, profile):
+    device.phase = "launch"
     launch = device.shell(
         "am", "start", "-W", "-a", "android.intent.action.MAIN", "-c",
         "android.intent.category.LAUNCHER", "-n", f"{profile.package}/{profile.activity}"
@@ -82,12 +92,16 @@ def launch_camera(device, profile):
     require_foreground(device, profile)
 
 
-def enter_portrait_video(device, profile, steps):
+def enter_portrait_video(device, profile, result):
+    steps = result["steps"]
     launch_camera(device, profile)
     mode_text, more_text = profile.label_set("mode"), profile.label_set("more")
 
     root = device.ui()
+    # Galaxy Camera remembers its last mode, so the start state is part of the checkpoint name.
+    device.checkpoint("initial_in_mode" if portrait_ready(root, profile) else "initial")
     if not portrait_ready(root, profile):
+        device.phase = "mode_select"
         if (back := find_node(root, profile, "instant_mode_back")) is not None:
             device.tap(center(back))
             root = device.ui()
@@ -98,7 +112,9 @@ def enter_portrait_video(device, profile, steps):
                 tile = pinned
             elif (more := find_node(root, profile, "mode_button", more_text)) is not None:
                 device.tap(center(more))
-                tile = find_node(device.ui(), profile, "more_grid_item", mode_text)
+                opened = device.ui()
+                device.checkpoint("more_opened")
+                tile = find_node(opened, profile, "more_grid_item", mode_text)
                 if tile is not None:
                     steps.append("more_opened")
         if tile is None:
@@ -107,15 +123,37 @@ def enter_portrait_video(device, profile, steps):
 
     start_text = profile.label_set("record_start")
 
+    dumps = {"failed": False, "count": 0}
+
     def ready_button():
-        state = device.ui()
+        # A dump can fail transiently while the preview animates after a mode switch.
+        try:
+            state = device.ui()
+        except RunError as exc:
+            if exc.code != "UI_UNAVAILABLE":
+                raise
+            dumps["failed"] = True
+            dumps["count"] += 1
+            return None
+        dumps["failed"] = False
         if portrait_ready(state, profile):
             node = find_node(state, profile, "record_button", start_text)
             if node is not None and node.get("enabled") == "true" and node.get("clickable") == "true":
+                device.checkpoint("mode_ready")
                 return center(node)
         return None
 
-    return wait_for(ready_button, 8, "MODE_NOT_READY", "Portrait Video and its Record button were not ready.")
+    device.phase = "mode_ready"
+
+    try:
+        return wait_for(ready_button, 8, "MODE_NOT_READY", "Portrait Video and its Record button were not ready.")
+    except RunError as exc:
+        if exc.code == "MODE_NOT_READY" and dumps["failed"]:
+            raise RunError("UI_UNAVAILABLE", "Camera UI hierarchy stayed unavailable while waiting for the Record button.") from exc
+        raise
+    finally:
+        if dumps["count"]:
+            result["ui_retries"] = dumps["count"]
 
 
 def mode_labels(root, profile, key):
@@ -232,6 +270,7 @@ def verify_video(device, before):
 
 
 def record(device, profile, point, seconds, result):
+    device.phase = "recording"
     require_foreground(device, profile)
     pid = device.shell("pidof", "-s", profile.package)
     if not pid.isdecimal():
@@ -280,6 +319,6 @@ def record(device, profile, point, seconds, result):
 
 
 def execute(device, profile, seconds, result):
-    point = enter_portrait_video(device, profile, result["steps"])
+    point = enter_portrait_video(device, profile, result)
     result["steps"].append("portrait_video_ready")
     return record(device, profile, point, seconds, result)

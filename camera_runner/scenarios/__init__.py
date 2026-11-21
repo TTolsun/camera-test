@@ -1,7 +1,7 @@
 """Scenarios shared by the list, inspect, run and profile commands."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
@@ -18,6 +18,9 @@ class Scenario:
     video_filename: str
     scan: Callable[[Device, AppProfile], tuple[dict, bool]]
     execute: Callable[[Device, AppProfile, int, dict], str]
+    # Phase name -> profile selector keys that phase relies on. Failure diagnosis only reports
+    # those selectors as absent; a scenario without phases reports every selector.
+    phases: dict = field(default_factory=dict)
 
 
 SCENARIOS = {
@@ -27,6 +30,7 @@ SCENARIOS = {
         video_filename="portrait-video.mp4",
         scan=galaxy_portrait_video.scan_modes,
         execute=galaxy_portrait_video.execute,
+        phases=galaxy_portrait_video.PHASES,
     ),
 }
 

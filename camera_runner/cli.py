@@ -4,28 +4,31 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shlex
 import sys
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
+from . import preflight, screens
 from .checks import load_checks, resolve_check
+from .failures import failure_class
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
 from .logcat import LOG_LINE
 from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file
 
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 
-def inspect_scenario(device, name, scenario, profile, version, no_ui):
-    status = {"name": name, "status": "unknown", "reason": "UI_SCAN_SKIPPED"}
+def inspect_scenario(device, name, scenario, profile, version, skip_reason):
+    status = {"name": name, "status": "unknown", "reason": skip_reason or "UI_SCAN_SKIPPED"}
     result = {"scenario": status}
     if version is None:
         status.update(status="unavailable", reason="CAMERA_APP_NOT_FOUND")
         return result
     status["profile"] = profile.summary(version)
-    if not no_ui:
+    if skip_reason is None:
         try:
             result["camera_ui"], seen = scenario.scan(device, profile)
             status.update(status="runnable" if seen else "unavailable",
@@ -72,8 +75,14 @@ def inspect_device(args, checks):
             }
         except RunError as exc:
             result["camera_service_error"] = exc.code
+        skip_reason = "UI_SCAN_SKIPPED" if args.no_ui else None
+        if not args.no_ui:
+            # Scanning taps the screen, so a locked or sleeping phone is reported instead of scanned.
+            result["preflight"] = preflight.measure(device)
+            if failed := preflight.verdict(result["preflight"]):
+                result["preflight"]["failed"] = skip_reason = failed[0]
         result.update(inspect_scenario(device, primary_name, primary, profiles[primary_name],
-                                       info["camera_version"], args.no_ui))
+                                       info["camera_version"], skip_reason))
         if len(SCENARIOS) > 1:
             versions = {profiles[primary_name].package: info["camera_version"]}
             result["scenarios"] = [result["scenario"]]
@@ -81,7 +90,7 @@ def inspect_device(args, checks):
                 package = profiles[name].package
                 if package not in versions:
                     versions[package] = device.package_version(package)
-                registration = inspect_scenario(device, name, scenario, profiles[name], versions[package], args.no_ui)
+                registration = inspect_scenario(device, name, scenario, profiles[name], versions[package], skip_reason)
                 result["scenarios"].append(registration["scenario"])
         return result
 
@@ -99,17 +108,57 @@ def capture_failure(device, package, output, result):
         pass
 
 
-def diagnose_failure(device, profile, output, result):
-    """Keep the last UI dump and compare it with the profile so selector drift is visible."""
+def diagnose_failure(device, scenario, profile, output, result):
+    """Keep the last UI dump and compare it with the selectors the failing phase relies on."""
+    if device.phase:
+        result.setdefault("diagnosis", {})["phase"] = device.phase
     if device.last_ui is None:
         return
     try:
         path = output / "failure-ui.xml"
         path.write_text(device.last_ui, encoding="utf-8")
         result["artifacts"]["failure_ui"] = str(path)
-        result.setdefault("diagnosis", {})["ui"] = selector_report(profile, device.last_ui)
+        result.setdefault("diagnosis", {})["ui"] = selector_report(
+            profile, device.last_ui, scenario.phases.get(device.phase))
     except (OSError, ValueError):
         pass
+
+
+def warn(result, code):
+    result.setdefault("warnings", []).append(code)
+
+
+def cleanup_video(device, result):
+    """Delete only the exact MP4 this run created. A failed deletion is a warning, not a failure."""
+    video = result.get("video")
+    path = video.get("device_path", "") if video else ""
+    if not (path.startswith("/sdcard/") and path.lower().endswith(".mp4") and "\n" not in path):
+        warn(result, "VIDEO_CLEANUP_FAILED")
+        return
+    try:
+        video["deleted"] = device.shell("sh", "-c", f"rm {shlex.quote(path)} && echo deleted") == "deleted"
+    except RunError:
+        video["deleted"] = False
+    if not video["deleted"]:
+        warn(result, "VIDEO_CLEANUP_FAILED")
+
+
+def finish_screens(profile, golden, output, saved, result):
+    """Record the captured checkpoints and, when a golden set is given, attach the drift report."""
+    result["screens"] = list(saved)
+    if not saved:
+        return
+    result["artifacts"]["screens"] = str(output / "screens")
+    if golden is None:
+        return
+    try:
+        drift = screens.compare(profile, golden, screens.read_snapshots(output / "screens"))
+    except RunError as exc:
+        result["drift_error"] = exc.code
+        return
+    result["drift"] = drift
+    if drift["severity"] != "none":
+        warn(result, f"UI_DRIFT_{drift['severity'].upper()}")
 
 
 def run(args, checks, result, output):
@@ -119,8 +168,12 @@ def run(args, checks, result, output):
         profile = read_profile_file(args.profile_file)
         if profile.scenario != args.scenario:
             raise RunError("INVALID_PROFILE_FILE", f"Profile is for {profile.scenario}, not {args.scenario}.")
+    golden = screens.load_golden(args.golden, args.scenario)[1] if args.golden else None
     selected = select_device(args.device)
     device = Device(selected, result["run_id"])
+    saved = []
+    if args.capture_screens or golden is not None:
+        device.checkpoint_sink = screens.snapshot_sink(output / "screens", profile.package, saved)
     lock_key = device.shell("getprop", "ro.serialno") or selected
     with device_lock(lock_key):
         result["device"] = device.metadata()
@@ -134,11 +187,12 @@ def run(args, checks, result, output):
                 raise RunError("UNSUPPORTED_CAMERA_VERSION",
                                f"{scenario.app_name} {version} is not a verified version of this profile ({verified}). "
                                "Rerun with --allow-unverified-version to verify it.")
-            result["warnings"] = ["UNVERIFIED_CAMERA_VERSION"]
+            warn(result, "UNVERIFIED_CAMERA_VERSION")
 
         check, reason = resolve_check(checks, args.check, result["device"]["soc_vendor"])
         if args.check:
             result["feature"]["reason"] = reason
+        result["preflight"] = preflight.check(device)
         since = device.clock()
         tags = dict.fromkeys(profile.log_tags)
         if check:
@@ -168,12 +222,15 @@ def run(args, checks, result, output):
                     clip.unlink(missing_ok=True)
                     raise
                 result["artifacts"]["video"] = str(clip)
+            if args.cleanup_video:
+                cleanup_video(device, result)
         except (RunError, KeyboardInterrupt):
             if result["scenario_status"] != "PASS":
                 capture_failure(device, profile.package, output, result)
-                diagnose_failure(device, profile, output, result)
+                diagnose_failure(device, scenario, profile, output, result)
             raise
         finally:
+            finish_screens(profile, golden, output, saved, result)
             try:
                 logs = output / "logcat.txt"
                 text = device.logs(since, tags)
@@ -183,6 +240,11 @@ def run(args, checks, result, output):
                     result.setdefault("diagnosis", {})["record_state_log"] = record_state_stats(profile, text)
             except (RunError, OSError):
                 result["log_capture_error"] = "LOG_CAPTURE_FAILED"
+
+
+def classify(result):
+    if "error" in result:
+        result["failure_class"] = failure_class(result["error"]["code"], result.get("diagnosis"))
 
 
 def read_checks(path):
@@ -209,6 +271,24 @@ def run_hal(args):
         if not trial.log.is_file():
             save_trial_logs(trial, device.logs(trial.since, trial.tags))
         return collected_trial(trial), 0
+
+
+def run_screens(args):
+    """Create or compare golden screen sets. Neither uses ADB."""
+    if args.screens_command == "promote":
+        return {"golden": str(args.output.resolve()), **screens.promote(args.run, args.output, args.force)}
+    manifest, golden = screens.load_golden(args.golden)
+    if args.profile_file:
+        profile = read_profile_file(args.profile_file)
+    elif manifest.get("scenario") in SCENARIOS:
+        profile = SCENARIOS[manifest["scenario"]].profile
+    else:
+        raise RunError("INVALID_GOLDEN", f"Golden set names an unknown scenario: {manifest.get('scenario')!r}.")
+    if not (args.run / "screens").is_dir():
+        raise RunError("SCREENS_NOT_CAPTURED", "The run has no screens. Rerun with --capture-screens.")
+    summary = {key: manifest.get(key) for key in ("scenario", "app_version", "created")}
+    report = screens.compare(profile, golden, screens.read_snapshots(args.run / "screens"))
+    return {"golden": summary, "profile": profile.source, **report}
 
 
 def run_profile(args):
@@ -253,6 +333,16 @@ def main():
     show.add_argument("--output", type=Path, help="Write a UTF-8 file instead of printing to stdout.")
     validate = profile_commands.add_parser("validate", help="Check a profile JSON against its scenario.")
     validate.add_argument("path", type=Path)
+    screen_cmd = commands.add_parser("screens", help="Create and compare golden UI snapshot sets without ADB.")
+    screen_commands = screen_cmd.add_subparsers(dest="screens_command", required=True)
+    promote = screen_commands.add_parser("promote", help="Turn a passing run that used --capture-screens into a golden set.")
+    promote.add_argument("--run", type=Path, required=True, help="Run folder, e.g. runs/<run-id>.")
+    promote.add_argument("--output", type=Path, required=True, help="Golden set folder to create.")
+    promote.add_argument("--force", action="store_true", help="Replace an existing golden set.")
+    screen_compare = screen_commands.add_parser("compare", help="Report UI drift between a golden set and a run.")
+    screen_compare.add_argument("--golden", type=Path, required=True)
+    screen_compare.add_argument("--run", type=Path, required=True)
+    screen_compare.add_argument("--profile-file", type=Path, help="Profile the run used, when it was not the built-in one.")
     hal = commands.add_parser("hal", help="Capture and compare Camera HAL logcat trials.")
     hal_commands = hal.add_subparsers(dest="hal_command", required=True)
     begin = hal_commands.add_parser("begin", help="Mark the start of an OFF or ON trial.")
@@ -278,6 +368,12 @@ def main():
     command.add_argument("--check", help="Optional named feature check.")
     command.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
     command.add_argument("--profile-file", type=Path, help="App profile JSON for this scenario, e.g. one adjusted for a new app build.")
+    command.add_argument("--capture-screens", action="store_true",
+                         help="Save normalized UI snapshots at checkpoints under runs/<run-id>/screens.")
+    command.add_argument("--golden", type=Path,
+                         help="Golden set folder. Implies --capture-screens and adds a drift report; never changes the verdict.")
+    command.add_argument("--cleanup-video", action="store_true",
+                         help="After verification, delete the exact MP4 this run created from the device.")
     command.add_argument("--allow-unverified-version", action="store_true",
                          help="Run even when the app version is not in the profile's verified_versions.")
     args = parser.parse_args()
@@ -286,6 +382,14 @@ def main():
         return 0
     if args.command == "profile":
         return run_profile(args)
+    if args.command == "screens":
+        try:
+            result, exit_code = run_screens(args), 0
+        except (RunError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            exit_code = 1
+        print(json.dumps(result, ensure_ascii=False))
+        return exit_code
     if args.command == "hal":
         try:
             result, exit_code = run_hal(args)
@@ -324,6 +428,7 @@ def main():
     except KeyboardInterrupt:
         result["error"] = {"code": "INTERRUPTED", "message": "Camera test was interrupted."}
 
+    classify(result)
     if output.is_dir():
         path = output / "result.json"
         result["artifacts"]["result"] = str(path)
@@ -332,6 +437,7 @@ def main():
         except OSError:
             result["artifacts"].pop("result")
             result["error"] = {"code": "RESULT_WRITE_FAILED", "message": "Could not save result.json."}
+            classify(result)
     print(json.dumps(result))
     if "error" in result or "log_capture_error" in result or result["scenario_status"] != "PASS":
         return 1

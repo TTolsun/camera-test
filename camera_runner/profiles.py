@@ -122,8 +122,11 @@ def decode_json_text(raw):
     return raw.decode("utf-8-sig")
 
 
-def selector_report(profile, xml_text, limit=80):
-    """Compare profile selectors with one captured UI hierarchy and suggest renamed IDs."""
+def selector_report(profile, xml_text, expected=None, limit=80):
+    """Compare profile selectors with one captured UI hierarchy and suggest renamed IDs.
+
+    `expected` limits the absent list to the selector keys the failing phase relies on.
+    """
     root = ElementTree.fromstring(xml_text)
     prefix = f"{profile.package}:id/"
     labels = {label.strip().casefold() for values in profile.labels.values() for label in values}
@@ -142,7 +145,8 @@ def selector_report(profile, xml_text, limit=80):
         "present": [key for key, selector in profile.selectors.items() if selector in on_screen],
         "absent": {
             key: {"expected": selector, "similar": get_close_matches(selector, on_screen, n=3, cutoff=0.6)}
-            for key, selector in profile.selectors.items() if selector not in on_screen
+            for key, selector in profile.selectors.items()
+            if selector not in on_screen and (expected is None or key in expected)
         },
         "labeled_nodes": labeled[:20],
         "resource_ids": on_screen[:limit],

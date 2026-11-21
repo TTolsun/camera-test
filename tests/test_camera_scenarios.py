@@ -34,6 +34,14 @@ class MockCameraAdb:
         self.clocks = 0
         self.record_taps = 0
         self.renamed_ids = {}
+        self.wakefulness = "Awake"  # None omits the line, as an Android version without it would.
+        self.keyguard = "false"
+        self.free_kb = 10_000_000
+        self.launch_status = "Status: ok"
+        self.record_log = None  # Replaces the RecordingManager log lines when set.
+        self.deleted = []
+        self.rm_fails = False
+        self.ui_failures = 0  # Portrait Video dumps that fail before one succeeds.
 
     def hierarchy(self):
         if self.mode == "portrait":
@@ -73,7 +81,7 @@ class MockCameraAdb:
             return f"topResumedActivity=ActivityRecord{{1 u0 {GALAXY_PACKAGE}/.Camera}}"
         if remote[:2] == ["am", "start"]:
             assert remote[-1] == f"{GALAXY_PACKAGE}/.Camera"
-            return "Status: ok"
+            return self.launch_status
         if remote[:2] == ["input", "tap"]:
             point = tuple(remote[2:])
             self.taps.append(point)
@@ -90,11 +98,29 @@ class MockCameraAdb:
         if remote[0] == "logcat":
             if "ExampleHal:V" in remote and "RecordingManager:V" not in remote:
                 return "11-21 09:10:12.000 2222 2222 I ExampleHal: feature_applied=true"
+            if self.record_log is not None:
+                return self.record_log
             return STOPPED if remote[3] == "11-21 09:10:03.100" else STARTED
         if remote == ["stat", "-c", "%s", VIDEO_PATH]:
             return "4"
+        if remote[0] == "df":
+            assert remote[1:] == ["-k", "/sdcard"]
+            return ("Filesystem     1K-blocks    Used Available Use% Mounted on\n"
+                    f"/dev/fuse      481226752 1000 {self.free_kb} 46% /storage/emulated")
         if remote[:2] == ["sh", "-c"]:
+            if remote[2].startswith("dumpsys power | "):
+                return f"  mWakefulness={self.wakefulness}" if self.wakefulness else ""
+            if remote[2].startswith("dumpsys window | "):
+                return f"    isKeyguardShowing={self.keyguard}" if self.keyguard else ""
+            if remote[2].startswith("rm "):
+                if self.rm_fails:
+                    raise adb.RunError("ADB_ERROR", "rm failed")
+                self.deleted.append(shlex.split(remote[2])[1])
+                return "deleted"
             if remote[2].startswith("uiautomator dump "):
+                if self.mode == "portrait" and self.ui_failures:
+                    self.ui_failures -= 1
+                    return "ERROR: could not get idle state."
                 return self.hierarchy()
             if remote[2].startswith("dumpsys media.camera | "):
                 return "Number of camera devices: 1"
@@ -252,6 +278,278 @@ class ScenarioCliTests(unittest.TestCase):
             code, result = self.cli("run", name, "--output-dir", output)
             self.assertEqual((code, result["scenario_status"], result["device"]["camera_version"]), (0, "PASS", "2.0"))
             runner.assert_called_once()
+
+
+class SelectDeviceTests(unittest.TestCase):
+    def select(self, listing, serials):
+        def fake(*args, **kwargs):
+            if args == ("devices",):
+                return "List of devices attached\n" + "".join(f"{name}\t{state}\n" for name, state in listing)
+            assert args[0] == "-s" and args[2:] == ("shell", "getprop ro.serialno"), args
+            return serials[args[1]]
+        with patch.object(adb, "adb", side_effect=fake) as mocked:
+            try:
+                return adb.select_device(None), mocked.call_count
+            except adb.RunError as exc:
+                return exc.code, mocked.call_count
+
+    def test_one_phone_listed_twice_is_selected_once(self):
+        mdns = "adb-R3CY10TZLJB-0nUgkc._adb-tls-connect._tcp"
+        same = {mdns: "R3CY10TZLJB\n", "192.168.35.18:45483": "R3CY10TZLJB\n"}
+        listing = [(mdns, "device"), ("192.168.35.18:45483", "device")]
+        self.assertEqual(self.select(listing, same), ("192.168.35.18:45483", 3))
+        self.assertEqual(self.select(listing[::-1], same)[0], "192.168.35.18:45483")
+        self.assertEqual(self.select([("a", "device"), ("b", "device")], {"a": "X", "b": "X"})[0], "a")
+
+    def test_different_phones_or_unreadable_serials_still_require_a_choice(self):
+        listing = [("a", "device"), ("b", "device")]
+        self.assertEqual(self.select(listing, {"a": "X", "b": "Y"})[0], "DEVICE_REQUIRED")
+        self.assertEqual(self.select(listing, {"a": "", "b": ""})[0], "DEVICE_REQUIRED")
+
+    def test_single_device_needs_no_extra_adb_call(self):
+        self.assertEqual(self.select([("a", "device"), ("emulator-5554", "device")], {}), ("a", 1))
+
+
+class EfficiencyCliTests(unittest.TestCase):
+    def setUp(self):
+        self.device = MockCameraAdb()
+
+    def cli(self, *arguments):
+        output = StringIO()
+        with patch.object(sys, "argv", ["camera-test", *map(str, arguments)]), redirect_stdout(output):
+            with patch.object(adb, "adb", side_effect=self.device):
+                code = camera_test.main()
+        return code, json.loads(output.getvalue())
+
+    def run_scenario(self, *extra, slow=False):
+        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+            if slow:  # Every wait_for gives up after its first probe.
+                with patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+                    return self.cli("run", GALAXY_SCENARIO, "--output-dir", output, *extra)
+            return self.cli("run", GALAXY_SCENARIO, "--output-dir", output, *extra)
+
+    def test_preflight_records_measurements_on_success(self):
+        code, result = self.run_scenario()
+        self.assertEqual(code, 0)
+        self.assertEqual(result["preflight"], {"screen": "awake", "lock": "unlocked",
+                                               "free_bytes": 10_000_000 * 1024, "min_free_bytes": 500 * 1024 * 1024})
+        self.assertNotIn("failure_class", result)
+
+    def test_preflight_failures_stop_before_any_tap(self):
+        for knob, value, expected in (("wakefulness", "Asleep", "PRECHECK_SCREEN_OFF"),
+                                      ("wakefulness", "Dozing", "PRECHECK_SCREEN_OFF"),
+                                      ("keyguard", "true", "PRECHECK_LOCKED"),
+                                      ("free_kb", 100_000, "PRECHECK_LOW_STORAGE")):
+            self.device = MockCameraAdb()
+            setattr(self.device, knob, value)
+            code, result = self.run_scenario()
+            self.assertEqual((code, result["error"]["code"], result["failure_class"]), (1, expected, "environment"))
+            self.assertEqual(self.device.taps, [])
+
+    def test_unknown_lock_and_power_signals_do_not_fail(self):
+        self.device.wakefulness = self.device.keyguard = None
+        code, result = self.run_scenario()
+        self.assertEqual(code, 0)
+        self.assertEqual((result["preflight"]["screen"], result["preflight"]["lock"]), ("unknown", "unknown"))
+
+    def test_inspect_reports_a_locked_phone_instead_of_scanning(self):
+        self.device.keyguard = "true"
+        code, result = self.cli("inspect")
+        self.assertEqual((code, self.device.taps), (0, []))
+        self.assertEqual(result["preflight"]["failed"], "PRECHECK_LOCKED")
+        self.assertEqual(result["scenario"]["reason"], "PRECHECK_LOCKED")
+        self.assertNotIn("camera_ui", result)
+        self.assertNotIn("preflight", self.cli("inspect", "--no-ui")[1])
+
+    def test_failure_class_for_each_class(self):
+        self.device.launch_status = "Status: error"
+        code, result = self.run_scenario()
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("CAMERA_LAUNCH_FAILED", "product"))
+        self.assertEqual(result["diagnosis"]["phase"], "launch")
+
+        self.device = MockCameraAdb()
+        self.device.renamed_ids = {"shooting_mode_portrait_video_main": "renamed"}
+        code, result = self.run_scenario(slow=True)
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("MODE_NOT_READY", "automation"))
+
+        # The start log is there but its wording changed: automation. No log at all: product.
+        self.device = MockCameraAdb()
+        self.device.record_log = "11-21 09:10:12.100 1234 1234 I RecordingManager: state is now recording"
+        code, result = self.run_scenario(slow=True)
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("RECORD_START_UNVERIFIED", "automation"))
+        self.device = MockCameraAdb()
+        self.device.record_log = ""
+        code, result = self.run_scenario(slow=True)
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("RECORD_START_UNVERIFIED", "product"))
+        self.assertEqual(result["diagnosis"]["phase"], "recording")
+
+        code, result = self.cli("run", GALAXY_SCENARIO, "--profile-file", "missing.json")
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("INVALID_PROFILE_FILE", "automation"))
+
+    def test_diagnosis_lists_only_selectors_of_the_failing_phase(self):
+        self.device.renamed_ids = {"shooting_mode_portrait_video_main": "renamed"}
+        code, result = self.run_scenario(slow=True)
+        diagnosis = result["diagnosis"]
+        self.assertEqual(diagnosis["phase"], "mode_ready")
+        # The Portrait Video screen has no mode strip, but the mode_ready phase does not need one.
+        self.assertEqual(list(diagnosis["ui"]["absent"]), ["mode_ready"])
+        self.assertIn("record_button", diagnosis["ui"]["present"])
+        self.assertTrue(diagnosis["ui"]["resource_ids"])
+
+    def test_capture_promote_compare_round_trip(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
+            self.assertEqual((code, result["screens"]), (0, ["initial", "more_opened", "mode_ready"]))
+            run_dir = Path(result["artifacts"]["result"]).parent
+            snapshot = json.loads((run_dir / "screens" / "mode_ready.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["nodes"][0], {"resource-id": "shooting_mode_portrait_video_main", "text": "",
+                                                    "content-desc": "", "class": ""})
+            self.assertNotIn("bounds", json.dumps(snapshot))
+
+            golden = Path(root) / "golden"
+            code, promoted = self.cli("screens", "promote", "--run", run_dir, "--output", golden)
+            self.assertEqual((code, promoted["scenario"], promoted["app_version"], promoted["profile_source"]),
+                             (0, GALAXY_SCENARIO, "17.0.00.43", "built-in"))
+            self.assertEqual(sorted(path.name for path in golden.iterdir()),
+                             ["golden.json", "initial.json", "mode_ready.json", "more_opened.json"])
+            self.assertEqual(self.cli("screens", "promote", "--run", run_dir, "--output", golden)[1]["error"]["code"],
+                             "GOLDEN_EXISTS")
+
+            code, report = self.cli("screens", "compare", "--golden", golden, "--run", run_dir)
+            self.assertEqual((code, report["severity"]), (0, "none"))
+
+            def drifted(name, edit):
+                copy = Path(root) / name
+                (copy / "screens").mkdir(parents=True)
+                for path in (run_dir / "screens").glob("*.json"):
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    edit(path.stem, data["nodes"])
+                    (copy / "screens" / path.name).write_text(json.dumps(data), encoding="utf-8")
+                return self.cli("screens", "compare", "--golden", golden, "--run", copy)[1]
+
+            def rename(checkpoint, nodes):
+                for item in nodes:
+                    if item["resource-id"] == "shooting_mode_portrait_video_main":
+                        item["resource-id"] = "shooting_mode_portrait_video_v2"
+            report = drifted("renamed", rename)
+            self.assertEqual(report["severity"], "breaking")
+            ready = report["checkpoints"]["mode_ready"]
+            self.assertEqual((ready["missing_ids"], ready["new_ids"]),
+                             (["shooting_mode_portrait_video_main"], ["shooting_mode_portrait_video_v2"]))
+            self.assertEqual(ready["profile_selectors_missing"],
+                             [{"key": "mode_ready", "selector": "shooting_mode_portrait_video_main"}])
+
+            def extra(checkpoint, nodes):
+                nodes.append({"resource-id": "promo_banner", "text": "New", "content-desc": "", "class": ""})
+            report = drifted("extra", extra)
+            self.assertEqual(report["severity"], "cosmetic")
+            self.assertEqual(report["checkpoints"]["initial"]["new_ids"], ["promo_banner"])
+            self.assertEqual(report["checkpoints"]["initial"]["profile_selectors_missing"], [])
+
+            def relabel(checkpoint, nodes):
+                for item in nodes:
+                    if item["resource-id"] == "center_button_container":
+                        item["content-desc"] = "Capture"
+                    if item["resource-id"] == "shooting_mode_list":
+                        item["content-desc"] = "Picture, mode"
+            report = drifted("relabeled", relabel)
+            self.assertEqual(report["severity"], "breaking")
+            self.assertEqual(report["checkpoints"]["mode_ready"]["changed_labels"],
+                             [{"id": "center_button_container", "golden": ["Start recording"], "now": ["Capture"]}])
+            # The mode strip label is not a profile label, so that checkpoint is only cosmetic.
+            self.assertEqual(report["checkpoints"]["initial"]["severity"], "cosmetic")
+
+    def test_promote_refuses_failed_runs_and_runs_without_screens(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root)
+            run_dir = Path(result["artifacts"]["result"]).parent
+            code, result = self.cli("screens", "promote", "--run", run_dir, "--output", Path(root) / "g")
+            self.assertEqual((code, result["error"]["code"]), (1, "SCREENS_NOT_CAPTURED"))
+            data = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            data["scenario_status"] = "FAIL"
+            (run_dir / "result.json").write_text(json.dumps(data), encoding="utf-8")
+            code, result = self.cli("screens", "promote", "--run", run_dir, "--output", Path(root) / "g")
+            self.assertEqual(result["error"]["code"], "RUN_NOT_PASSED")
+
+    def test_run_with_golden_attaches_drift_without_changing_the_verdict(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
+            golden = Path(root) / "golden"
+            self.cli("screens", "promote", "--run", Path(result["artifacts"]["result"]).parent, "--output", golden)
+
+            self.device = MockCameraAdb()
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual((code, result["scenario_status"], result["drift"]["severity"]), (0, "PASS", "none"))
+            self.assertNotIn("warnings", result)
+
+            # The mode strip is not used by the run, so the run passes while the screen drifts.
+            self.device = MockCameraAdb()
+            self.device.renamed_ids = {"shooting_mode_list": "shooting_mode_list_v2"}
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual((code, result["scenario_status"], result["drift"]["severity"]), (0, "PASS", "breaking"))
+            self.assertEqual(result["warnings"], ["UI_DRIFT_BREAKING"])
+            self.assertEqual(result["drift"]["checkpoints"]["initial"]["profile_selectors_missing"],
+                             [{"key": "mode_strip", "selector": "shooting_mode_list"}])
+            self.assertTrue((Path(result["artifacts"]["screens"]) / "mode_ready.json").is_file())
+
+            self.device = MockCameraAdb()
+            self.device.versions[GALAXY_PACKAGE] = "18.0.00.1"
+            self.device.renamed_ids = {"shooting_mode_list": "shooting_mode_list_v2"}
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden,
+                                    "--allow-unverified-version")
+            self.assertEqual(result["warnings"], ["UNVERIFIED_CAMERA_VERSION", "UI_DRIFT_BREAKING"])
+
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", Path(root) / "nope")
+            self.assertEqual((code, result["error"]["code"], result["failure_class"]), (1, "INVALID_GOLDEN", "automation"))
+
+    def test_golden_from_photo_start_does_not_flag_a_run_that_starts_in_portrait_video(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
+            golden = Path(root) / "golden"
+            self.cli("screens", "promote", "--run", Path(result["artifacts"]["result"]).parent, "--output", golden)
+
+            # The app remembers Portrait Video, so the next run starts already in the mode.
+            self.device = MockCameraAdb()
+            self.device.mode = "portrait"
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual((code, result["scenario_status"], result["screens"]), (0, "PASS", ["initial_in_mode", "mode_ready"]))
+            self.assertEqual(result["drift"]["severity"], "none")
+            self.assertNotIn("warnings", result)
+            checkpoints = result["drift"]["checkpoints"]
+            self.assertEqual((checkpoints["initial"], checkpoints["more_opened"]),
+                             ({"severity": "none", "not_reached": True},) * 2)
+            self.assertEqual(result["drift"]["extra_checkpoints"], ["initial_in_mode"])
+
+    def test_transient_ui_dump_failure_while_waiting_for_the_mode_is_tolerated(self):
+        self.device.ui_failures = 1
+        code, result = self.run_scenario()
+        self.assertEqual((code, result["scenario_status"], result["ui_retries"]), (0, "PASS", 1))
+
+        self.device = MockCameraAdb()
+        code, result = self.run_scenario()
+        self.assertNotIn("ui_retries", result)
+
+        self.device = MockCameraAdb()
+        self.device.ui_failures = 10 ** 6
+        code, result = self.run_scenario(slow=True)
+        self.assertEqual((code, result["error"]["code"], result["failure_class"]), (1, "UI_UNAVAILABLE", "environment"))
+        self.assertGreaterEqual(result["ui_retries"], 1)
+
+    def test_cleanup_deletes_only_the_video_this_run_created(self):
+        code, result = self.run_scenario("--pull-video", "--cleanup-video")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.device.deleted, [VIDEO_PATH])
+        self.assertEqual(result["video"], {"device_path": VIDEO_PATH, "bytes": 4, "deleted": True})
+
+        self.device = MockCameraAdb()
+        code, result = self.run_scenario()
+        self.assertEqual((self.device.deleted, "deleted" in result["video"]), ([], False))
+
+    def test_failed_cleanup_only_warns(self):
+        self.device.rm_fails = True
+        code, result = self.run_scenario("--cleanup-video")
+        self.assertEqual((code, result["scenario_status"]), (0, "PASS"))
+        self.assertEqual((result["video"]["deleted"], result["warnings"]), (False, ["VIDEO_CLEANUP_FAILED"]))
 
 
 if __name__ == "__main__":
