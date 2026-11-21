@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from . import screens
 from .adb import Device, RunError, select_device
+from .guidance import decision_next_action
 from .profiles import parse_profile
 from .scenarios import SCENARIOS, read_profile_file, resolve_profile
 
@@ -271,6 +272,7 @@ def render_markdown(report, batch):
     lines = [
         f"# 카메라 앱 빌드 검증: {version}", "",
         f"**결정: `{decision}`** — {NEXT_STEPS_BY_DECISION[decision]}", "",
+        f"**다음 행동**: {report['next_action']}", "",
         "## 결과",
         f"- 시나리오 {scenario}, 기기 {report['device'].get('model') or report['device']['serial']}, "
         f"프로필 {report['profile']['source']}(검증 목록 포함: {'예' if report['verified'] else '아니요'})",
@@ -344,7 +346,9 @@ def verify_build(args, run_once, tool_version):
         entry = state_entry(read_state(args.state_file), hardware, scenario)
         if already_handled(entry, version):
             return {"status": "unchanged", "decision": "unchanged", "app_version": version,
-                    "previous_decision": entry.get("decision"), "report": entry.get("report")}, 0
+                    "previous_decision": entry.get("decision"), "report": entry.get("report"),
+                    "next_action": f"이 앱 버전은 이미 처리되어(이전 결정 {entry.get('decision')}) 다시 실행하지 않았습니다. "
+                                   "이전 report의 결정을 따릅니다. 다시 검증하려면 `--if-changed` 없이 실행합니다."}, 0
 
     batch = args.output_dir.resolve() / f"{now_utc():%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
     batch.mkdir(parents=True)
@@ -374,6 +378,8 @@ def verify_build(args, run_once, tool_version):
         if report["baseline"]["regressions"]:
             report["warnings"] = sorted({*report["warnings"], "METRIC_REGRESSION"})
     report["proposal"] = write_proposal(batch, profile, version, records, scenario) if report["decision"] == "promote" else None
+    blocked = next((result for result, record in zip(results, records) if record["failure_class"] == "environment"), None)
+    report["next_action"] = decision_next_action(report["decision"], report, blocked)
     report["artifacts"] = {"report": str(batch / "report.json"), "markdown": str(batch / "report.md")}
     write_json_atomic(batch / "report.json", report)
     (batch / "report.md").write_text(render_markdown(report, batch), encoding="utf-8")
@@ -382,5 +388,5 @@ def verify_build(args, run_once, tool_version):
             "app_version": version, "decision": report["decision"], "report": report["artifacts"]["report"],
             "finished": report["finished"]})
     summary = {"status": "completed", "decision": report["decision"], "pass_rate": report["iterations"]["pass_rate"],
-               "app_version": version, "report": report["artifacts"]["report"]}
+               "app_version": version, "report": report["artifacts"]["report"], "next_action": report["next_action"]}
     return summary, DECISION_EXIT_CODES[report["decision"]]

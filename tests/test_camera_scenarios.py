@@ -53,6 +53,11 @@ class MockCameraAdb:
         self.files = []  # MP4s on the device: the first recording is VIDEO_PATH, later ones get their own names.
         self.recordings = 0
         self.commands = []  # Every shell command, to prove what a short-circuited command did not touch.
+        self.calls = []  # Every adb invocation (args tuple), including exec-out and pull.
+        self.listing = [("mock-phone", "device")]  # (serial, state) rows of `adb devices`.
+        self.other_hardware = {}  # Hardware serial answered for listed serials other than mock-phone.
+        self.mdns = "List of discovered mdns services\n"
+        self.adb_version = "Android Debug Bridge version 1.0.41\nVersion 35.0.2-12147458\nInstalled as C:\\adb.exe"
 
     def hierarchy(self):
         if self.mode == "portrait":
@@ -70,8 +75,20 @@ class MockCameraAdb:
         return f"<hierarchy>{nodes}</hierarchy>"
 
     def __call__(self, *args, **kwargs):
+        self.calls.append(args)
+        if args == ("version",):
+            return self.adb_version
         if args == ("devices",):
-            return "List of devices attached\nmock-phone\tdevice\n"
+            return "List of devices attached\n" + "".join(f"{serial}\t{state}\n" for serial, state in self.listing)
+        if args == ("devices", "-l"):
+            return "List of devices attached\n" + "".join(
+                f"{serial:<22} {state} product:mock model:Mock_Galaxy device:mock transport_id:{index}\n"
+                for index, (serial, state) in enumerate(self.listing, 1))
+        if args == ("mdns", "services"):
+            return self.mdns
+        if args[0] == "-s" and args[1] in self.other_hardware:
+            assert args[2:] == ("shell", "getprop ro.serialno"), args
+            return self.other_hardware[args[1]]
         assert args[:2] == ("-s", "mock-phone"), args
         if args[2] == "exec-out":
             return b""

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import camera_test
-from camera_runner import adb, failures
+from camera_runner import adb, failures, guidance
 from camera_runner.scenarios import galaxy_portrait_video
 from tests.mp4_builder import audio_track, mp4, video_track
 from tests.test_camera_scenarios import GALAXY_PACKAGE, GALAXY_SCENARIO, LAUNCHER_PACKAGE, OWNER_APP, MockCameraAdb
@@ -260,6 +260,49 @@ class VerifyBuildTests(CliTestCase):
         code, result = self.verify()
         self.assertEqual((code, result["error"]["code"]), (1, "CAMERA_APP_NOT_FOUND"))
         self.assertEqual(self.ui_commands(), [])
+
+    def test_summary_and_report_carry_a_next_action_for_each_decision(self):
+        code, summary = self.verify("--repeat", 1)
+        report = self.report(summary)
+        self.assertEqual(summary["decision"], "promote")
+        self.assertIn(report["proposal"]["profile"], summary["next_action"])
+        self.assertIn(NEW_VERSION, summary["next_action"])
+        self.assertEqual(report["next_action"], summary["next_action"])
+        self.assertIn(summary["next_action"], Path(report["artifacts"]["markdown"]).read_text(encoding="utf-8"))
+
+        self.device = MockCameraAdb()
+        self.device.video_bytes = GOOD_MP4
+        self.device.top = OWNER_APP
+        code, summary = self.verify("--repeat", 1)
+        self.assertEqual(summary["decision"], "environment_blocked")
+        self.assertIn(OWNER_APP, summary["next_action"])
+
+        self.device = MockCameraAdb()
+        self.device.video_bytes = LONG_MP4
+        self.device.versions[GALAXY_PACKAGE] = NEW_VERSION
+        code, summary = self.verify("--repeat", 1)
+        self.assertEqual(summary["decision"], "product_failure")
+        self.assertIn("logcat.txt", summary["next_action"])
+
+        self.device = MockCameraAdb()
+        self.device.video_bytes = GOOD_MP4
+        code, summary = self.verify("--repeat", 1)  # 17.0.00.43 is verified: baseline_ok.
+        self.assertEqual(summary["decision"], "baseline_ok")
+        self.assertIn("--baseline", summary["next_action"])
+
+    def test_profile_fix_flaky_and_unchanged_next_actions(self):
+        report = {"scenario": GALAXY_SCENARIO, "app_version": NEW_VERSION, "proposal": None,
+                  "runs": [{"status": "FAIL", "result": "runs/a/result.json", "failure_class": "automation", "error_code": "MODE_NOT_READY"}]}
+        fix = guidance.decision_next_action("needs_profile_fix", report)
+        self.assertIn("runs/a/result.json", fix)
+        self.assertIn(f"profile show {GALAXY_SCENARIO} --output", fix)
+        self.assertIn("--repeat", guidance.decision_next_action("flaky", report))
+
+        self.state.parent.mkdir()
+        self.state.write_text(json.dumps({"devices": {"mock-hardware": {GALAXY_SCENARIO: {
+            "app_version": NEW_VERSION, "decision": "promote", "report": "old/report.json"}}}}), encoding="utf-8")
+        code, summary = self.verify("--if-changed", "--state-file", self.state)
+        self.assertIn("promote", summary["next_action"])
 
 
 if __name__ == "__main__":
