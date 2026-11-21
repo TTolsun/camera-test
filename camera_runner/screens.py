@@ -84,8 +84,13 @@ def load_golden(directory, scenario=None):
     return manifest, snapshots
 
 
-def promote(run_dir, output, force=False):
-    """Create a golden set from a passing run that captured screens."""
+def promote(run_dir, output, force=False, merge=False):
+    """Create a golden set from a passing run that captured screens.
+
+    `merge` adds the run's checkpoints to an existing golden set and keeps the ones it already has.
+    """
+    if merge and force:
+        raise RunError("INVALID_ARGUMENTS", "merge and force cannot be used together.")
     run_dir, output = Path(run_dir), Path(output)
     result = read_json(run_dir / "result.json", "INVALID_RUN", "Run result")
     if result.get("scenario_status") != "PASS" or "error" in result:
@@ -94,20 +99,35 @@ def promote(run_dir, output, force=False):
     snapshots = read_snapshots(screens) if screens.is_dir() else {}
     if not snapshots:
         raise RunError("SCREENS_NOT_CAPTURED", "The run has no screens. Rerun with --capture-screens.")
-    if (output / MANIFEST).exists() and not force:
-        raise RunError("GOLDEN_EXISTS", f"{output} already holds a golden set. Pass --force to replace it.")
+    scenario, app_version = result.get("scenario"), result.get("device", {}).get("camera_version")
+    existing = None
+    if (output / MANIFEST).exists():
+        if merge:
+            existing = read_json(output / MANIFEST, "INVALID_GOLDEN", "Golden manifest")
+            if existing.get("scenario") != scenario or existing.get("app_version") != app_version:
+                raise RunError("GOLDEN_MISMATCH", (
+                    f"The run is {scenario} {app_version}, but the golden set is "
+                    f"{existing.get('scenario')} {existing.get('app_version')}."))
+        elif not force:
+            raise RunError("GOLDEN_EXISTS",
+                           f"{output} already holds a golden set. Pass --force to replace it or --merge to add checkpoints.")
+    elif merge:
+        raise RunError("INVALID_GOLDEN", f"{output} holds no golden set to merge into.")
     try:
         output.mkdir(parents=True, exist_ok=True)
+        kept = set(existing["checkpoints"]) if existing and isinstance(existing.get("checkpoints"), list) else set()
+        kept |= {path.stem for path in output.glob("*.json") if path.name != MANIFEST} if existing else set()
         for name in snapshots:
-            shutil.copyfile(screens / f"{name}.json", output / f"{name}.json")
-        manifest = {
+            if name not in kept:
+                shutil.copyfile(screens / f"{name}.json", output / f"{name}.json")
+        manifest = existing or {
             "schema_version": SCHEMA_VERSION,
-            "scenario": result.get("scenario"),
-            "app_version": result.get("device", {}).get("camera_version"),
+            "scenario": scenario,
+            "app_version": app_version,
             "profile_source": result.get("profile", {}).get("source"),
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "checkpoints": sorted(snapshots),
         }
+        manifest["checkpoints"] = sorted(kept | set(snapshots))
         (output / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         raise RunError("IO_ERROR", str(exc)[:240]) from exc
@@ -130,7 +150,8 @@ def _labels(nodes):
 
 def compare_checkpoint(profile, golden, now):
     """Differences between two node lists, with a severity judged against the profile."""
-    golden_ids, now_ids = _ids(golden), _ids(now)
+    volatile = set(profile.volatile_ids)
+    golden_ids, now_ids = _ids(golden) - volatile, _ids(now) - volatile
     golden_labels, now_labels = _labels(golden), _labels(now)
     profile_labels = {label.strip().casefold() for values in profile.labels.values() for label in values}
     changed = [

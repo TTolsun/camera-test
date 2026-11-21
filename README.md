@@ -59,7 +59,7 @@ python camera-test.pyz run galaxy.portrait-video --duration 5
 
 ## 실행 전 환경 점검(preflight)
 
-`run`과 UI를 탐색하는 `inspect`는 화면을 조작하기 전에 환경을 점검하고, 측정값을 `preflight`에 기록합니다.
+`run`과 UI를 탐색하는 `inspect`는 화면을 조작하기 전에 환경을 점검하고, 측정값을 `preflight`에 기록합니다. 점검에 실패한 `run`도 측정값을 `preflight`에 남겨, 어떤 앱이 앞에 있었는지 등을 볼 수 있습니다.
 
 | 오류 코드 | 조건 |
 |---|---|
@@ -100,7 +100,14 @@ PASS한 실행도 앱 UI가 바뀌었는지는 알려 주지 않습니다. 기�
    python camera-test.pyz screens promote --run runs/<run-id> --output golden/17.0.00.43
    ```
 
-3. 새 빌드에서 `--golden`으로 실행합니다. 결과에 `drift`가 붙지만 `scenario_status`와 종료 코드는 바뀌지 않습니다. 변화가 있으면 `warnings`에 `UI_DRIFT_BREAKING` 또는 `UI_DRIFT_COSMETIC`이 추가됩니다.
+   갤럭시 카메라는 마지막 모드를 기억하므로 시작 상태에 따라 체크포인트가 다릅니다. 사진 모드에서 시작한 실행은 `initial`, `more_opened`, `mode_ready`를, 이미 인물 동영상 모드에서 시작한 실행은 `initial_in_mode`, `mode_ready`를 저장합니다. 반복 실행(`verify-build`)은 대부분 후자이므로 골든에 `initial_in_mode`가 없으면 시작 화면이 비교되지 않습니다. 완전한 골든을 만들려면 각 시작 상태에서 `--capture-screens` 실행을 하나씩 승격합니다. 두 번째부터는 `--merge`로 이미 있는 체크포인트를 유지한 채 새 체크포인트만 추가합니다(실행의 시나리오와 앱 버전이 골든과 다르면 거부되고, `--force`와 함께 쓸 수 없습니다).
+
+   ```powershell
+   python camera-test.pyz screens promote --run runs/<photo-start-run-id> --output golden/17.0.00.43
+   python camera-test.pyz screens promote --run runs/<portrait-start-run-id> --output golden/17.0.00.43 --merge
+   ```
+
+3. 새 빌드에서 `--golden`으로 실행합니다. 결과에 `drift`가 붙지만 `scenario_status`와 종료 코드는 바뀌지 않습니다. 프로필 선택자가 사라졌거나 프로필 문구가 바뀐 `breaking` 변화만 `warnings`에 `UI_DRIFT_BREAKING`을 추가하고, `cosmetic` 변화는 `drift` 보고서에만 남습니다(매번 경고가 뜨면 무시하게 되기 때문입니다).
 
    ```powershell
    python camera-test.pyz run galaxy.portrait-video --golden golden/17.0.00.43
@@ -113,6 +120,8 @@ PASS한 실행도 앱 UI가 바뀌었는지는 알려 주지 않습니다. 기�
    ```
 
 스냅샷에는 앱 패키지의 노드만, 그리고 `resource-id`(짧은 형태), `text`, `content-desc`, `class`만 저장합니다. 좌표와 다른 앱의 노드는 저장하지 않습니다. 체크포인트별 `missing_ids`, `new_ids`, `changed_labels`, `profile_selectors_missing`과 다음 심각도를 보고합니다.
+
+프로필의 선택적 필드 `volatile_ids`에 적은 리소스 ID는 비교에서 제외합니다. 잠깐 나타났다 사라지는 안내 문구처럼 덤프 시점에 따라 보이거나 안 보이는 노드를 위한 것으로, 내장 프로필은 `guide_text`(Portrait Video 진입 직후의 "준비되었어요" 힌트, SM-S936N / 17.0.00.43에서 관찰)를 넣어 두었습니다. 파일에서는 생략할 수 있고(기본값은 빈 목록), 프로필 선택자와 겹치면 거부됩니다. `profile show`가 이 필드를 출력합니다.
 
 | `severity` | 조건 |
 |---|---|
@@ -207,7 +216,7 @@ python camera-test.pyz verify-build galaxy.portrait-video --repeat 5 --golden go
 | `report.json` | 집계 결과입니다. 앱 버전과 `verified`, 반복 수(`requested`, `run`, `passed`, `pass_rate`), `failure_classes`, `error_codes`, `ui_retries` 합계, 지표별 `min`/`median`/`max`(통과한 실행만 사용: `record_start_latency_ms`, `record_stop_latency_ms`, `video_ready_ms`), 영상 요약(코덱, 해상도, fps 소수 첫째 자리, 오디오 유무, 길이 최소·최대), `drift`(최악 등급, `profile_selectors_missing`·`changed_labels`의 합집합), `warnings`, 실행별 `run_id`와 `result.json` 경로, `decision`을 담습니다. |
 | `report.md` | 결정, 숫자, 사람이 실행할 다음 명령을 한국어로 정리합니다. |
 | `proposal/profile.json` | `promote`일 때만 만듭니다. 사용한 프로필에 새 버전을 `verified_versions`에 추가한 것이며 프로필 로더로 검증합니다. |
-| `proposal/golden/` | `promote`일 때만, 화면을 저장한 첫 통과 실행에서 승격합니다. |
+| `proposal/golden/` | `promote`일 때만, 화면을 저장한 모든 통과 실행의 체크포인트를 합쳐 만듭니다(같은 체크포인트는 먼저 통과한 실행 것을 씁니다). 시작 상태가 다른 반복의 화면이 함께 들어갑니다. |
 | `<run-id>/` | 반복마다의 `result.json`, `logcat.txt`, `screens/`, 실패 증거입니다. |
 
 `--baseline`을 주면 `report["baseline"]`에 지표별 이전 중앙값, 변화량, `regression`을 기록합니다. 중앙값이 25%를 넘고 100 ms를 넘게 늘면(`camera_runner/verify.py`의 `REGRESSION_RATIO`, `REGRESSION_MIN_MS`) 악화로 보고 `warnings`에 `METRIC_REGRESSION`을 추가합니다. 결정은 바뀌지 않습니다.

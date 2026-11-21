@@ -207,7 +207,7 @@ def compare_baseline(path, metrics):
 
 
 def write_proposal(batch, profile, version, records, scenario):
-    """Write proposal/profile.json (validated with the profile loader) and a golden set from the first suitable run."""
+    """Write proposal/profile.json (validated with the profile loader) and a golden set merged from all passing runs."""
     folder = batch / "proposal"
     data = profile.to_dict()
     if version not in data["verified_versions"]:
@@ -216,15 +216,17 @@ def write_proposal(batch, profile, version, records, scenario):
     write_json_atomic(folder / "profile.json", data)
     read_profile_file(folder / "profile.json")
     proposal = {"profile": str(folder / "profile.json"), "golden": None, "golden_from": None}
+    # The golden is the union of checkpoints over all passing runs: the first run holding a checkpoint wins,
+    # so runs that start in different modes still cover both start states.
     for record in records:
         run_dir = Path(record["result"]).parent if record["result"] else None
         if record["status"] == "PASS" and run_dir and (run_dir / "screens").is_dir():
             try:
-                screens.promote(run_dir, folder / "golden")
+                screens.promote(run_dir, folder / "golden", merge=proposal["golden"] is not None)
             except RunError:
                 continue
-            proposal.update(golden=str(folder / "golden"), golden_from=record["run_id"])
-            break
+            proposal["golden"] = str(folder / "golden")
+            proposal["golden_from"] = proposal["golden_from"] or record["run_id"]
     return proposal
 
 

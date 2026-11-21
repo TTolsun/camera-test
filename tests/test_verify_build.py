@@ -143,8 +143,11 @@ class VerifyBuildTests(CliTestCase):
         self.assertEqual((code, validated["verified_versions"]), (0, ["17.0.00.43", NEW_VERSION]))
         self.assertEqual(proposal["golden_from"], report["runs"][0]["run_id"])
         golden = Path(proposal["golden"])
+        # The first iteration started in Photo mode and later ones in Portrait Video; the golden covers both.
         self.assertEqual(sorted(path.name for path in golden.iterdir()),
-                         ["golden.json", "initial.json", "mode_ready.json", "more_opened.json"])
+                         ["golden.json", "initial.json", "initial_in_mode.json", "mode_ready.json", "more_opened.json"])
+        self.assertEqual(json.loads((golden / "golden.json").read_text(encoding="utf-8"))["checkpoints"],
+                         ["initial", "initial_in_mode", "mode_ready", "more_opened"])
         self.assertEqual(self.cli("screens", "compare", "--golden", golden, "--run", Path(report["runs"][0]["result"]).parent)[1]["severity"], "none")
         text = (batch / "report.md").read_text(encoding="utf-8")
         self.assertIn("promote", text.splitlines()[2])

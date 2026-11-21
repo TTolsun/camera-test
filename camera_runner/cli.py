@@ -18,7 +18,7 @@ from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
@@ -188,8 +188,8 @@ def finish_screens(profile, golden, output, saved, result):
         result["drift_error"] = exc.code
         return
     result["drift"] = drift
-    if drift["severity"] != "none":
-        warn(result, f"UI_DRIFT_{drift['severity'].upper()}")
+    if drift["severity"] == "breaking":  # Cosmetic drift is only in the report; it would warn on every run.
+        warn(result, "UI_DRIFT_BREAKING")
 
 
 def run(args, checks, result, output):
@@ -219,7 +219,9 @@ def run(args, checks, result, output):
         check, reason = resolve_check(checks, args.check, result["device"]["soc_vendor"])
         if args.check:
             result["feature"]["reason"] = reason
-        result["preflight"] = preflight.check(device, profile.package if args.require_idle else None)
+        result["preflight"] = preflight.measure(device, profile.package if args.require_idle else None)
+        if failed := preflight.verdict(result["preflight"]):
+            raise RunError(*failed)
         since = device.clock()
         tags = dict.fromkeys(profile.log_tags)
         if check:
@@ -340,7 +342,9 @@ def run_hal(args):
 def run_screens(args):
     """Create or compare golden screen sets. Neither uses ADB."""
     if args.screens_command == "promote":
-        return {"golden": str(args.output.resolve()), **screens.promote(args.run, args.output, args.force)}
+        if args.merge and args.force:
+            raise RunError("INVALID_ARGUMENTS", "--merge and --force cannot be used together.")
+        return {"golden": str(args.output.resolve()), **screens.promote(args.run, args.output, args.force, args.merge)}
     manifest, golden = screens.load_golden(args.golden)
     if args.profile_file:
         profile = read_profile_file(args.profile_file)
@@ -403,6 +407,8 @@ def main():
     promote.add_argument("--run", type=Path, required=True, help="Run folder, e.g. runs/<run-id>.")
     promote.add_argument("--output", type=Path, required=True, help="Golden set folder to create.")
     promote.add_argument("--force", action="store_true", help="Replace an existing golden set.")
+    promote.add_argument("--merge", action="store_true",
+                         help="Add this run's checkpoints to an existing golden set without replacing the ones it has.")
     screen_compare = screen_commands.add_parser("compare", help="Report UI drift between a golden set and a run.")
     screen_compare.add_argument("--golden", type=Path, required=True)
     screen_compare.add_argument("--run", type=Path, required=True)

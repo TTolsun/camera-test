@@ -528,6 +528,104 @@ class EfficiencyCliTests(unittest.TestCase):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", Path(root) / "nope")
             self.assertEqual((code, result["error"]["code"], result["failure_class"]), (1, "INVALID_GOLDEN", "automation"))
 
+    def golden_from_photo_run(self, root):
+        code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
+        golden = Path(root) / "golden"
+        self.cli("screens", "promote", "--run", Path(result["artifacts"]["result"]).parent, "--output", golden)
+        return golden
+
+    def captured_portrait_run(self, root, *extra):
+        self.device = MockCameraAdb()
+        self.device.mode = "portrait"
+        return self.cli("run", GALAXY_SCENARIO, "--output-dir", root, *extra)
+
+    def test_volatile_id_is_ignored_by_drift_comparison(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            golden = self.golden_from_photo_run(root)
+            self.assertIn("guide_text", SCENARIOS[GALAXY_SCENARIO].profile.volatile_ids)
+            self.device = MockCameraAdb()
+            self.device.mode = "portrait"
+            original = MockCameraAdb.hierarchy
+            hint = node("guide_text", 'text="Ready"')
+            with patch.object(MockCameraAdb, "hierarchy",
+                              lambda device: original(device).replace("</hierarchy>", hint + "</hierarchy>")):
+                code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual((code, result["scenario_status"], result["drift"]["severity"]), (0, "PASS", "none"))
+            self.assertEqual(result["drift"]["checkpoints"]["mode_ready"]["new_ids"], [])
+            self.assertNotIn("warnings", result)
+
+    def test_cosmetic_drift_adds_no_warning_but_breaking_does(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            golden = self.golden_from_photo_run(root)
+            self.device = MockCameraAdb()
+            self.device.mode = "portrait"
+            original = MockCameraAdb.hierarchy
+            banner = node("promo_banner", 'text="New"')
+            with patch.object(MockCameraAdb, "hierarchy",
+                              lambda device: original(device).replace("</hierarchy>", banner + "</hierarchy>")):
+                code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual((code, result["drift"]["severity"]), (0, "cosmetic"))
+            self.assertEqual(result["drift"]["checkpoints"]["mode_ready"]["new_ids"], ["promo_banner"])
+            self.assertNotIn("warnings", result)
+
+            self.device = MockCameraAdb()
+            self.device.renamed_ids = {"shooting_mode_list": "shooting_mode_list_v2"}
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--golden", golden)
+            self.assertEqual(result["warnings"], ["UI_DRIFT_BREAKING"])
+
+    def test_profile_rejects_volatile_ids_that_overlap_selectors(self):
+        with TemporaryDirectory() as output:
+            profile = Path(output) / "profile.json"
+            data = SCENARIOS[GALAXY_SCENARIO].profile.to_dict()
+            self.assertIn("guide_text", data["volatile_ids"])
+            data["volatile_ids"] = ["guide_text", data["selectors"]["record_button"]]
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            code, result = self.cli("profile", "validate", profile)
+            self.assertEqual((code, result["valid"]), (1, False))
+            self.assertIn("center_button_container", result["error"]["message"])
+            data["volatile_ids"] = "guide_text"
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            self.assertFalse(self.cli("profile", "validate", profile)[1]["valid"])
+            del data["volatile_ids"]  # Optional in profile files.
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            self.assertTrue(self.cli("profile", "validate", profile)[1]["valid"])
+
+    def test_promote_merge_adds_checkpoints_of_the_other_start_state(self):
+        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+            golden = self.golden_from_photo_run(root)
+            before = (golden / "mode_ready.json").read_text(encoding="utf-8")
+            code, result = self.captured_portrait_run(root, "--capture-screens")
+            run_dir = Path(result["artifacts"]["result"]).parent
+            self.assertEqual(result["screens"], ["initial_in_mode", "mode_ready"])
+
+            args = ("screens", "promote", "--run", run_dir, "--output", golden)
+            self.assertEqual(self.cli(*args)[1]["error"]["code"], "GOLDEN_EXISTS")
+            code, merged = self.cli(*args, "--merge")
+            self.assertEqual(code, 0, merged)
+            self.assertEqual(merged["checkpoints"], ["initial", "initial_in_mode", "mode_ready", "more_opened"])
+            self.assertEqual(json.loads((golden / "golden.json").read_text(encoding="utf-8"))["checkpoints"],
+                             merged["checkpoints"])
+            self.assertTrue((golden / "initial_in_mode.json").is_file())
+            self.assertEqual((golden / "mode_ready.json").read_text(encoding="utf-8"), before)
+
+            self.assertEqual(self.cli(*args, "--merge", "--force")[1]["error"]["code"], "INVALID_ARGUMENTS")
+
+            data = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            data["device"]["camera_version"] = "18.0.00.1"
+            (run_dir / "result.json").write_text(json.dumps(data), encoding="utf-8")
+            self.assertEqual(self.cli(*args, "--merge")[1]["error"]["code"], "GOLDEN_MISMATCH")
+
+    def test_failed_preflight_keeps_the_measurement(self):
+        self.device.top = OWNER_APP
+        code, result = self.run_scenario("--require-idle")
+        self.assertEqual(result["error"]["code"], "PRECHECK_DEVICE_BUSY")
+        self.assertEqual(result["preflight"]["foreground"]["package"], OWNER_APP)
+        self.assertEqual(result["preflight"]["foreground"]["state"], "busy")
+        self.device = MockCameraAdb()
+        self.device.keyguard = "true"
+        code, result = self.run_scenario()
+        self.assertEqual(result["preflight"]["lock"], "locked")
+
     def test_golden_from_photo_start_does_not_flag_a_run_that_starts_in_portrait_video(self):
         with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")

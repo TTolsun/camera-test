@@ -31,6 +31,14 @@ PROFILE = {
         "more": ["더보기", "more"],
         "record_start": ["녹화 시작", "start recording", "record video"],
     },
+    # Short-lived "ready" hint shown right after entering Portrait Video; whether a UI dump catches it is
+    # timing. The level-meter overlay swaps its nodes with how the phone is tilted. Both observed on
+    # SM-S936N / 17.0.00.43 between runs of an unchanged build.
+    "volatile_ids": [
+        "guide_text",
+        "level_meter_guide", "level_meter_target", "level_meter_target_bg",
+        "guide_bar", "inclinometer", "level_bg", "vertical_guide_bg",
+    ],
     "log": {
         "tags": ["RecordingManager", "CameraService", "Camera3-Device", "MediaRecorder", "MPEG4Writer"],
         "record_state": {"tag": "RecordingManager", "pattern": r"changeRecordingState\s*:\s*(\w+)\s*->\s*(\w+)"},

@@ -13,7 +13,7 @@ from .logcat import LOG_LINE
 
 
 SCHEMA_VERSION = 1
-PROFILE_FIELDS = {"schema_version", "scenario", "package", "activity", "verified_versions", "selectors", "labels", "log"}
+PROFILE_FIELDS = {"schema_version", "scenario", "package", "activity", "verified_versions", "selectors", "labels", "log", "volatile_ids"}
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class AppProfile:
     record_state_tag: str
     record_state_pattern: re.Pattern
     source: str
+    volatile_ids: tuple = ()  # Resource ids drift comparison ignores (transient hints and the like).
 
     def resource_id(self, key):
         return f"{self.package}:id/{self.selectors[key]}"
@@ -51,6 +52,7 @@ class AppProfile:
             "verified_versions": list(self.verified_versions),
             "selectors": dict(self.selectors),
             "labels": {key: list(values) for key, values in self.labels.items()},
+            "volatile_ids": list(self.volatile_ids),
             "log": {
                 "tags": list(self.log_tags),
                 "record_state": {"tag": self.record_state_tag, "pattern": self.record_state_pattern.pattern},
@@ -101,17 +103,22 @@ def parse_profile(data, source, template=None):
     pattern = re.compile(_text(log["record_state"].get("pattern"), "log.record_state.pattern"))
     if pattern.groups != 2:
         raise ValueError("log.record_state.pattern must capture exactly two groups: the previous and next state.")
+    selectors = _keyed(data.get("selectors"), "selectors", template and template.selectors, _text)
+    volatile = _strings(data.get("volatile_ids", []), "volatile_ids", allow_empty=True)
+    if overlap := sorted(set(volatile) & set(selectors.values())):
+        raise ValueError(f"volatile_ids must not contain profile selectors: {overlap}.")
     return AppProfile(
         scenario=scenario,
         package=_text(data.get("package"), "package"),
         activity=_text(data.get("activity"), "activity"),
         verified_versions=_strings(data.get("verified_versions"), "verified_versions", allow_empty=True),
-        selectors=_keyed(data.get("selectors"), "selectors", template and template.selectors, _text),
+        selectors=selectors,
         labels=_keyed(data.get("labels"), "labels", template and template.labels, _strings),
         log_tags=tuple(dict.fromkeys((*_strings(log.get("tags"), "log.tags"), record_tag))),
         record_state_tag=record_tag,
         record_state_pattern=pattern,
         source=source,
+        volatile_ids=volatile,
     )
 
 
