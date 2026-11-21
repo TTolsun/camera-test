@@ -4,46 +4,54 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shlex
 import sys
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
+from . import media, preflight, screens, verify
 from .checks import load_checks, resolve_check
+from .failures import failure_class
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
 from .logcat import LOG_LINE
-from .scenarios import SCENARIOS
+from .profiles import record_state_stats, selector_report
+from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.1.0"
+VERSION = "1.5.1"
 
 
-def inspect_scenario(device, name, scenario, version, no_ui):
-    status = {"name": name, "status": "unknown", "reason": "UI_SCAN_SKIPPED"}
+def inspect_scenario(device, name, scenario, profile, version, skip_reason):
+    status = {"name": name, "status": "unknown", "reason": skip_reason or "UI_SCAN_SKIPPED"}
     result = {"scenario": status}
     if version is None:
         status.update(status="unavailable", reason="CAMERA_APP_NOT_FOUND")
         return result
-    if not no_ui:
+    status["profile"] = profile.summary(version)
+    if skip_reason is None:
         try:
-            result["camera_ui"], seen = scenario.scan(device)
+            result["camera_ui"], seen = scenario.scan(device, profile)
             status.update(status="runnable" if seen else "unavailable",
                           reason="MODE_OBSERVED" if seen else "MODE_NOT_OBSERVED")
         except RunError as exc:
             result["camera_ui_error"] = exc.code
             status.update(reason=exc.code)
-    if version != scenario.supported_version:
-        status.update(status="unavailable", reason="UNSUPPORTED_CAMERA_VERSION")
+    if not profile.verifies(version):
+        # The mode was found with the profile's selectors, so a verification run is worth trying.
+        status.update(status="unverified" if status["status"] == "runnable" else "unavailable",
+                      reason="UNSUPPORTED_CAMERA_VERSION")
     return result
 
 
 def inspect_device(args, checks):
+    profiles = active_profiles(args.profile_file)
     serial = select_device(args.device)
     device = Device(serial, uuid4().hex[:12])
     with device_lock(device.shell("getprop", "ro.serialno") or serial):
         registered = iter(SCENARIOS.items())
         primary_name, primary = next(registered)
         info = device.metadata()
-        info["camera_version"] = device.package_version(primary.package)
+        info["camera_version"] = device.package_version(profiles[primary_name].package)
         vendor = info["soc_vendor"]
         result = {
             "tool_version": VERSION,
@@ -67,14 +75,22 @@ def inspect_device(args, checks):
             }
         except RunError as exc:
             result["camera_service_error"] = exc.code
-        result.update(inspect_scenario(device, primary_name, primary, info["camera_version"], args.no_ui))
+        skip_reason = "UI_SCAN_SKIPPED" if args.no_ui else None
+        if not args.no_ui:
+            # Scanning taps the screen, so a locked or sleeping phone is reported instead of scanned.
+            result["preflight"] = preflight.measure(device)
+            if failed := preflight.verdict(result["preflight"]):
+                result["preflight"]["failed"] = skip_reason = failed[0]
+        result.update(inspect_scenario(device, primary_name, primary, profiles[primary_name],
+                                       info["camera_version"], skip_reason))
         if len(SCENARIOS) > 1:
-            versions = {primary.package: info["camera_version"]}
+            versions = {profiles[primary_name].package: info["camera_version"]}
             result["scenarios"] = [result["scenario"]]
             for name, scenario in registered:
-                if scenario.package not in versions:
-                    versions[scenario.package] = device.package_version(scenario.package)
-                registration = inspect_scenario(device, name, scenario, versions[scenario.package], args.no_ui)
+                package = profiles[name].package
+                if package not in versions:
+                    versions[package] = device.package_version(package)
+                registration = inspect_scenario(device, name, scenario, profiles[name], versions[package], skip_reason)
                 result["scenarios"].append(registration["scenario"])
         return result
 
@@ -92,29 +108,129 @@ def capture_failure(device, package, output, result):
         pass
 
 
+def diagnose_failure(device, scenario, profile, output, result):
+    """Keep the last UI dump and compare it with the selectors the failing phase relies on."""
+    if device.phase:
+        result.setdefault("diagnosis", {})["phase"] = device.phase
+    if device.last_ui is None:
+        return
+    try:
+        path = output / "failure-ui.xml"
+        path.write_text(device.last_ui, encoding="utf-8")
+        result["artifacts"]["failure_ui"] = str(path)
+        result.setdefault("diagnosis", {})["ui"] = selector_report(
+            profile, device.last_ui, scenario.phases.get(device.phase))
+    except (OSError, ValueError):
+        pass
+
+
+def warn(result, code):
+    result.setdefault("warnings", []).append(code)
+
+
+def cleanup_video(device, result):
+    """Delete only the exact MP4 this run created. A failed deletion is a warning, not a failure."""
+    video = result.get("video")
+    path = video.get("device_path", "") if video else ""
+    if not (path.startswith("/sdcard/") and path.lower().endswith(".mp4") and "\n" not in path):
+        warn(result, "VIDEO_CLEANUP_FAILED")
+        return
+    try:
+        video["deleted"] = device.shell("sh", "-c", f"rm {shlex.quote(path)} && echo deleted") == "deleted"
+    except RunError:
+        video["deleted"] = False
+    if not video["deleted"]:
+        warn(result, "VIDEO_CLEANUP_FAILED")
+
+
+def pull_video(device, clip, result):
+    """Copy the new MP4 to `clip` and check its size against the device file. Removes a bad copy."""
+    try:
+        device.pull(result["video"]["device_path"], clip)
+        if clip.stat().st_size != result["video"]["bytes"]:
+            raise RunError("VIDEO_COPY_INCOMPLETE", "Local MP4 size does not match the device file.")
+    except (RunError, OSError):
+        clip.unlink(missing_ok=True)
+        raise
+
+
+def verify_media(clip, seconds, result):
+    """Parse the pulled MP4 and fail the run on a broken recording. Warnings go to result["warnings"]."""
+    try:
+        info = media.inspect(clip)
+    except media.MediaError as exc:
+        result["media"] = {"error": exc.code}
+        raise fail_media(result, exc.code, str(exc))
+    failures, warnings = media.verdict(info, seconds)
+    result["media"] = {**info, "checks": media.check_summary(failures, warnings)}
+    for code, _ in warnings:
+        warn(result, code)
+    if failures:
+        raise fail_media(result, *failures[0])
+
+
+def fail_media(result, code, message):
+    result["scenario_status"] = "FAIL"
+    return RunError(code, message)
+
+
+def finish_screens(profile, golden, output, saved, result):
+    """Record the captured checkpoints and, when a golden set is given, attach the drift report."""
+    result["screens"] = list(saved)
+    if not saved:
+        return
+    result["artifacts"]["screens"] = str(output / "screens")
+    if golden is None:
+        return
+    try:
+        drift = screens.compare(profile, golden, screens.read_snapshots(output / "screens"))
+    except RunError as exc:
+        result["drift_error"] = exc.code
+        return
+    result["drift"] = drift
+    if drift["severity"] == "breaking":  # Cosmetic drift is only in the report; it would warn on every run.
+        warn(result, "UI_DRIFT_BREAKING")
+
+
 def run(args, checks, result, output):
     scenario = SCENARIOS[args.scenario]
+    profile = resolve_profile(args.scenario, args.profile_file)
+    golden = screens.load_golden(args.golden, args.scenario)[1] if args.golden else None
     selected = select_device(args.device)
     device = Device(selected, result["run_id"])
+    saved = []
+    if args.capture_screens or golden is not None:
+        device.checkpoint_sink = screens.snapshot_sink(output / "screens", profile.package, saved)
     lock_key = device.shell("getprop", "ro.serialno") or selected
     with device_lock(lock_key):
         result["device"] = device.metadata()
-        result["device"]["camera_version"] = device.package_version(scenario.package)
-        if result["device"]["camera_version"] != scenario.supported_version:
-            raise RunError("UNSUPPORTED_CAMERA_VERSION", f"This profile requires {scenario.app_name} {scenario.supported_version}.")
+        version = result["device"]["camera_version"] = device.package_version(profile.package)
+        if version is None:
+            raise RunError("CAMERA_APP_NOT_FOUND", f"{scenario.app_name} ({profile.package}) is not installed.")
+        result["profile"] = profile.summary(version)
+        if not profile.verifies(version):
+            if not args.allow_unverified_version:
+                verified = ", ".join(profile.verified_versions) or "none"
+                raise RunError("UNSUPPORTED_CAMERA_VERSION",
+                               f"{scenario.app_name} {version} is not a verified version of this profile ({verified}). "
+                               "Rerun with --allow-unverified-version to verify it.")
+            warn(result, "UNVERIFIED_CAMERA_VERSION")
 
         check, reason = resolve_check(checks, args.check, result["device"]["soc_vendor"])
         if args.check:
             result["feature"]["reason"] = reason
+        result["preflight"] = preflight.measure(device, profile.package if args.require_idle else None)
+        if failed := preflight.verdict(result["preflight"]):
+            raise RunError(*failed)
         since = device.clock()
-        tags = dict.fromkeys(scenario.log_tags)
+        tags = dict.fromkeys(profile.log_tags)
         if check:
             tags[check.tag] = None
             result["feature"]["source"] = check.source
             if check.vendor:
                 result["feature"]["vendor"] = check.vendor
         try:
-            recording_clock = scenario.execute(device, args.duration, result)
+            recording_clock = scenario.execute(device, profile, args.duration, result)
             result["scenario_status"] = "PASS"
             if check:
                 feature_log = device.logs(recording_clock, (check.tag,))
@@ -125,27 +241,43 @@ def run(args, checks, result, output):
                     result["feature"].pop("reason", None)
                 else:
                     result["feature"]["reason"] = "EXPECTED_LOG_NOT_FOUND"
-            if args.pull_video:
+            if args.pull_video or args.verify_media:
                 clip = output / scenario.video_filename
-                try:
-                    device.pull(result["video"]["device_path"], clip)
-                    if clip.stat().st_size != result["video"]["bytes"]:
-                        raise RunError("VIDEO_COPY_INCOMPLETE", "Local MP4 size does not match the device file.")
-                except (RunError, OSError):
-                    clip.unlink(missing_ok=True)
-                    raise
-                result["artifacts"]["video"] = str(clip)
+                pull_video(device, clip, result)
+                if args.pull_video:
+                    result["artifacts"]["video"] = str(clip)
+                if args.verify_media:
+                    try:
+                        verify_media(clip, args.duration, result)
+                    except RunError:
+                        result["artifacts"]["video"] = str(clip)  # Keep a rejected MP4 as evidence.
+                        raise
+                    if not args.pull_video:
+                        clip.unlink(missing_ok=True)
+            # The device file is deleted only after the pull and the media check finished.
+            if args.cleanup_video:
+                cleanup_video(device, result)
         except (RunError, KeyboardInterrupt):
-            if result["scenario_status"] != "PASS":
-                capture_failure(device, scenario.package, output, result)
+            if result["scenario_status"] != "PASS" and "media" not in result:
+                capture_failure(device, profile.package, output, result)
+                diagnose_failure(device, scenario, profile, output, result)
             raise
         finally:
+            finish_screens(profile, golden, output, saved, result)
             try:
                 logs = output / "logcat.txt"
-                logs.write_text(device.logs(since, tags) + "\n", encoding="utf-8")
+                text = device.logs(since, tags)
+                logs.write_text(text + "\n", encoding="utf-8")
                 result["artifacts"]["logcat"] = str(logs)
+                if result["scenario_status"] != "PASS":
+                    result.setdefault("diagnosis", {})["record_state_log"] = record_state_stats(profile, text)
             except (RunError, OSError):
                 result["log_capture_error"] = "LOG_CAPTURE_FAILED"
+
+
+def classify(result):
+    if "error" in result:
+        result["failure_class"] = failure_class(result["error"]["code"], result.get("diagnosis"))
 
 
 def read_checks(path):
@@ -153,6 +285,39 @@ def read_checks(path):
         return load_checks(path)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, re.error) as exc:
         raise RunError("INVALID_CHECKS_FILE", f"Check definition could not be read: {exc}") from exc
+
+
+def run_once(args):
+    """Run one scenario in-process and save result.json. Returns (result, exit_code) without printing."""
+    run_id = uuid4().hex[:12]
+    output = args.output_dir.resolve() / run_id
+    result = {"tool_version": VERSION, "run_id": run_id, "scenario": args.scenario, "scenario_status": "FAIL",
+              "requested_seconds": args.duration, "steps": [], "artifacts": {}}
+    if args.check:
+        result["feature"] = {"name": args.check, "status": "UNVERIFIED", "reason": "CHECK_NOT_REGISTERED"}
+    try:
+        output.mkdir(parents=True)
+        run(args, read_checks(args.checks_file), result, output)
+    except RunError as exc:
+        result["error"] = {"code": exc.code, "message": str(exc)}
+    except OSError as exc:
+        result["error"] = {"code": "IO_ERROR", "message": str(exc)[:240]}
+    except KeyboardInterrupt:
+        result["error"] = {"code": "INTERRUPTED", "message": "Camera test was interrupted."}
+
+    classify(result)
+    if output.is_dir():
+        path = output / "result.json"
+        result["artifacts"]["result"] = str(path)
+        try:
+            path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            result["artifacts"].pop("result")
+            result["error"] = {"code": "RESULT_WRITE_FAILED", "message": "Could not save result.json."}
+            classify(result)
+    if "error" in result or "log_capture_error" in result or result["scenario_status"] != "PASS":
+        return result, 1
+    return result, 2 if args.check and result["feature"]["status"] != "PASS" else 0
 
 
 def run_hal(args):
@@ -174,6 +339,50 @@ def run_hal(args):
         return collected_trial(trial), 0
 
 
+def run_screens(args):
+    """Create or compare golden screen sets. Neither uses ADB."""
+    if args.screens_command == "promote":
+        if args.merge and args.force:
+            raise RunError("INVALID_ARGUMENTS", "--merge and --force cannot be used together.")
+        return {"golden": str(args.output.resolve()), **screens.promote(args.run, args.output, args.force, args.merge)}
+    manifest, golden = screens.load_golden(args.golden)
+    if args.profile_file:
+        profile = read_profile_file(args.profile_file)
+    elif manifest.get("scenario") in SCENARIOS:
+        profile = SCENARIOS[manifest["scenario"]].profile
+    else:
+        raise RunError("INVALID_GOLDEN", f"Golden set names an unknown scenario: {manifest.get('scenario')!r}.")
+    if not (args.run / "screens").is_dir():
+        raise RunError("SCREENS_NOT_CAPTURED", "The run has no screens. Rerun with --capture-screens.")
+    summary = {key: manifest.get(key) for key in ("scenario", "app_version", "created")}
+    report = screens.compare(profile, golden, screens.read_snapshots(args.run / "screens"))
+    return {"golden": summary, "profile": profile.source, **report}
+
+
+def run_profile(args):
+    if args.profile_command == "show":
+        text = json.dumps(SCENARIOS[args.scenario].profile.to_dict(), ensure_ascii=False, indent=2) + "\n"
+        if args.output is None:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8")
+            sys.stdout.write(text)
+            return 0
+        try:
+            args.output.write_text(text, encoding="utf-8")
+            result, exit_code = {"scenario": args.scenario, "profile_file": str(args.output.resolve())}, 0
+        except OSError as exc:
+            result, exit_code = {"error": {"code": "IO_ERROR", "message": str(exc)}}, 1
+    else:
+        try:
+            profile = read_profile_file(args.path)
+            result = {"valid": True, "scenario": profile.scenario, "verified_versions": list(profile.verified_versions)}
+            exit_code = 0
+        except RunError as exc:
+            result, exit_code = {"valid": False, "error": {"code": exc.code, "message": str(exc)}}, 1
+    print(json.dumps(result))
+    return exit_code
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run repeatable camera scenarios on an ADB device.")
     parser.add_argument("--version", action="version", version=VERSION)
@@ -184,6 +393,30 @@ def main():
     inspection.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
     inspection.add_argument("--no-ui", action="store_true", help="Read device and camera service information without opening Camera.")
     inspection.add_argument("--pretty", action="store_true", help="Indent inspection JSON for terminal reading.")
+    inspection.add_argument("--profile-file", type=Path, help="App profile JSON that replaces the built-in profile of the scenario it names.")
+    profiles = commands.add_parser("profile", help="Export or validate app profiles without ADB.")
+    profile_commands = profiles.add_subparsers(dest="profile_command", required=True)
+    show = profile_commands.add_parser("show", help="Write the built-in profile of a scenario as JSON.")
+    show.add_argument("scenario", choices=tuple(SCENARIOS))
+    show.add_argument("--output", type=Path, help="Write a UTF-8 file instead of printing to stdout.")
+    validate = profile_commands.add_parser("validate", help="Check a profile JSON against its scenario.")
+    validate.add_argument("path", type=Path)
+    screen_cmd = commands.add_parser("screens", help="Create and compare golden UI snapshot sets without ADB.")
+    screen_commands = screen_cmd.add_subparsers(dest="screens_command", required=True)
+    promote = screen_commands.add_parser("promote", help="Turn a passing run that used --capture-screens into a golden set.")
+    promote.add_argument("--run", type=Path, required=True, help="Run folder, e.g. runs/<run-id>.")
+    promote.add_argument("--output", type=Path, required=True, help="Golden set folder to create.")
+    promote.add_argument("--force", action="store_true", help="Replace an existing golden set.")
+    promote.add_argument("--merge", action="store_true",
+                         help="Add this run's checkpoints to an existing golden set without replacing the ones it has.")
+    screen_compare = screen_commands.add_parser("compare", help="Report UI drift between a golden set and a run.")
+    screen_compare.add_argument("--golden", type=Path, required=True)
+    screen_compare.add_argument("--run", type=Path, required=True)
+    screen_compare.add_argument("--profile-file", type=Path, help="Profile the run used, when it was not the built-in one.")
+    media_cmd = commands.add_parser("media", help="Inspect saved recordings without ADB.")
+    media_commands = media_cmd.add_subparsers(dest="media_command", required=True)
+    media_inspect = media_commands.add_parser("inspect", help="Print brand, duration and tracks of an MP4 as JSON.")
+    media_inspect.add_argument("path", type=Path)
     hal = commands.add_parser("hal", help="Capture and compare Camera HAL logcat trials.")
     hal_commands = hal.add_subparsers(dest="hal_command", required=True)
     begin = hal_commands.add_parser("begin", help="Mark the start of an OFF or ON trial.")
@@ -206,12 +439,55 @@ def main():
     command.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5)
     command.add_argument("--output-dir", type=Path, default=Path("runs"))
     command.add_argument("--pull-video", action="store_true", help="Also copy the new MP4 to the run folder.")
+    command.add_argument("--verify-media", action="store_true",
+                         help="Copy the new MP4, parse it and fail the run on no video, no frames or a wrong length.")
     command.add_argument("--check", help="Optional named feature check.")
     command.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
+    command.add_argument("--profile-file", type=Path, help="App profile JSON for this scenario, e.g. one adjusted for a new app build.")
+    command.add_argument("--capture-screens", action="store_true",
+                         help="Save normalized UI snapshots at checkpoints under runs/<run-id>/screens.")
+    command.add_argument("--golden", type=Path,
+                         help="Golden set folder. Implies --capture-screens and adds a drift report; never changes the verdict.")
+    command.add_argument("--cleanup-video", action="store_true",
+                         help="After verification, delete the exact MP4 this run created from the device.")
+    command.add_argument("--allow-unverified-version", action="store_true",
+                         help="Run even when the app version is not in the profile's verified_versions.")
+    command.add_argument("--require-idle", action="store_true",
+                         help="Stop with PRECHECK_DEVICE_BUSY when an app other than the camera or the launcher is in the foreground.")
+    verify_cmd = commands.add_parser("verify-build", help="Repeat a scenario on the installed app build and decide what a human must do.")
+    verify_cmd.add_argument("scenario", choices=tuple(SCENARIOS))
+    verify_cmd.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
+    verify_cmd.add_argument("--repeat", type=int, choices=range(1, 51), metavar="N", default=5, help="Iterations (1-50).")
+    verify_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5)
+    verify_cmd.add_argument("--profile-file", type=Path, help="App profile JSON to verify instead of the built-in one.")
+    verify_cmd.add_argument("--golden", type=Path, help="Golden set folder for drift reports.")
+    verify_cmd.add_argument("--output-dir", type=Path, default=Path("runs/verify"))
+    verify_cmd.add_argument("--state-file", type=Path, help="JSON file that remembers the last batch per phone and scenario.")
+    verify_cmd.add_argument("--if-changed", action="store_true",
+                            help="Do nothing when --state-file shows this app version was already handled on this phone.")
+    verify_cmd.add_argument("--baseline", type=Path, help="Earlier report.json to compare metric medians with.")
     args = parser.parse_args()
     if args.command == "list":
         print(json.dumps(list(SCENARIOS)))
         return 0
+    if args.command == "profile":
+        return run_profile(args)
+    if args.command == "screens":
+        try:
+            result, exit_code = run_screens(args), 0
+        except (RunError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            exit_code = 1
+        print(json.dumps(result, ensure_ascii=False))
+        return exit_code
+    if args.command == "media":
+        try:
+            result, exit_code = media.inspect(args.path), 0
+        except (media.MediaError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            exit_code = 1
+        print(json.dumps(result))
+        return exit_code
     if args.command == "hal":
         try:
             result, exit_code = run_hal(args)
@@ -231,34 +507,19 @@ def main():
             sys.stdout.reconfigure(encoding="utf-8")
         print(json.dumps(result, ensure_ascii=not args.pretty, indent=2 if args.pretty else None))
         return exit_code
+    if args.command == "verify-build":
+        if args.if_changed and not args.state_file:
+            parser.error("--if-changed requires --state-file")
+        try:
+            result, exit_code = verify.verify_build(args, run_once, VERSION)
+        except (RunError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)[:240]}}
+            exit_code = 1
+        print(json.dumps(result, ensure_ascii=False))
+        return exit_code
     if args.checks_file and not args.check:
         parser.error("--checks-file requires --check")
 
-    run_id = uuid4().hex[:12]
-    output = args.output_dir.resolve() / run_id
-    result = {"tool_version": VERSION, "run_id": run_id, "scenario": args.scenario, "scenario_status": "FAIL",
-              "requested_seconds": args.duration, "steps": [], "artifacts": {}}
-    if args.check:
-        result["feature"] = {"name": args.check, "status": "UNVERIFIED", "reason": "CHECK_NOT_REGISTERED"}
-    try:
-        output.mkdir(parents=True)
-        run(args, read_checks(args.checks_file), result, output)
-    except RunError as exc:
-        result["error"] = {"code": exc.code, "message": str(exc)}
-    except OSError as exc:
-        result["error"] = {"code": "IO_ERROR", "message": str(exc)[:240]}
-    except KeyboardInterrupt:
-        result["error"] = {"code": "INTERRUPTED", "message": "Camera test was interrupted."}
-
-    if output.is_dir():
-        path = output / "result.json"
-        result["artifacts"]["result"] = str(path)
-        try:
-            path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except OSError:
-            result["artifacts"].pop("result")
-            result["error"] = {"code": "RESULT_WRITE_FAILED", "message": "Could not save result.json."}
+    result, exit_code = run_once(args)
     print(json.dumps(result))
-    if "error" in result or "log_capture_error" in result or result["scenario_status"] != "PASS":
-        return 1
-    return 2 if args.check and result["feature"]["status"] != "PASS" else 0
+    return exit_code

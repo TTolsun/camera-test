@@ -68,9 +68,24 @@ def select_device(serial):
     physical = [key for key, state in devices.items() if state == "device" and not key.startswith("emulator-")]
     if len(physical) == 1:
         return physical[0]
+    if len(physical) > 1 and (same := one_phone(physical)):
+        return same
     if physical:
         raise RunError("DEVICE_REQUIRED", "More than one device is ready. Specify --device.")
     raise RunError("NO_DEVICE", "Connect and authorize a Galaxy phone with ADB.")
+
+
+def one_phone(serials):
+    """Wireless debugging can list one phone under several transports; pick one if they share a hardware serial."""
+    hardware = set()
+    for serial in serials:
+        try:
+            hardware.add(adb("-s", serial, "shell", "getprop ro.serialno").strip())
+        except RunError:
+            return None
+    if len(hardware) != 1 or "" in hardware:
+        return None
+    return next((serial for serial in serials if re.fullmatch(r"\S+:\d+", serial)), serials[0])
 
 
 @contextmanager
@@ -96,6 +111,9 @@ class Device:
     def __init__(self, serial, run_id):
         self.serial = serial
         self.dump_path = f"/data/local/tmp/camera-test-{run_id}.xml"
+        self.last_ui = None  # Raw XML of the latest UI dump, kept for failure diagnosis.
+        self.phase = None  # Scenario phase in progress; limits which selectors a failure diagnosis checks.
+        self.checkpoint_sink = None  # Optional callable(name, xml) that stores a screen snapshot.
 
     def shell(self, *args, timeout=12):
         return adb("-s", self.serial, "shell", shlex.join(args), timeout=timeout).strip()
@@ -105,17 +123,43 @@ class Device:
         script = f"uiautomator dump {path} >/dev/null && cat {path}; rm -f {path}"
         data = self.shell("sh", "-c", script, timeout=14)
         try:
-            return ElementTree.fromstring(data)
+            root = ElementTree.fromstring(data)
         except ElementTree.ParseError as exc:
             raise RunError("UI_UNAVAILABLE", "Camera UI hierarchy is unavailable. Check unlock state or active recording.") from exc
+        self.last_ui = data
+        return root
+
+    def checkpoint(self, name):
+        """Hand the latest UI dump to the snapshot sink. Never dumps the UI itself."""
+        if self.checkpoint_sink is not None and self.last_ui is not None:
+            self.checkpoint_sink(name, self.last_ui)
 
     def tap(self, point):
         x, y = point
         self.shell("input", "tap", str(x), str(y))
 
-    def package_foreground(self, package):
+    def top_package(self):
+        """Package of the top resumed activity, or None when `dumpsys activity` does not show one."""
         activities = self.shell("dumpsys", "activity", "activities")
-        return bool(re.search(rf"topResumedActivity=[^\n]*\s{re.escape(package)}/", activities))
+        # Newer Android prints `topResumedActivity=`; `ResumedActivity:` is the fallback (older versions, or a dozing screen).
+        for marker in (r"topResumedActivity=", r"ResumedActivity:"):
+            if found := re.search(marker + r"[^\n]*?\s([\w.]+)/", activities):
+                return found[1]
+        return None
+
+    def launcher_package(self):
+        """Package of the default HOME launcher, or None when it cannot be resolved."""
+        try:
+            text = self.shell("cmd", "package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN",
+                              "-c", "android.intent.category.HOME")
+        except RunError:
+            return None
+        found = re.fullmatch(r"([\w.]+)/\S+", (text.splitlines() or [""])[-1].strip())
+        # "android" is the system resolver dialog, which means no default launcher is set.
+        return found[1] if found and found[1] != "android" else None
+
+    def package_foreground(self, package):
+        return self.top_package() == package
 
     def screenshot(self):
         return adb("-s", self.serial, "exec-out", "screencap", "-p", binary=True)
