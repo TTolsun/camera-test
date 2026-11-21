@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-작업별 스킬 선택은 [AGENTS.md](AGENTS.md)를 따른다. 사용자용 설명은 [README.md](README.md)(시작 안내)와 `docs/`(설치, 일상 검증, 새 앱 빌드 대응, 랩 자동 운영, 참조)에 있다. CLI 옵션이나 결과 필드를 바꾸면 `docs/reference.md`와 해당 가이드를 함께 고친다.
+작업별 스킬 선택은 [AGENTS.md](AGENTS.md)를 따른다. 사용자용 설명은 [README.md](README.md)(시작 안내)와 `docs/operations.md`(새 빌드 검증, 프로필 수정, 기준 화면, 랩 운영), `docs/reference.md`(필드·코드 참조)에 있다. 문제 해결 안내는 문서가 아니라 `guidance.py`의 `next_action`과 `doctor` 출력이 담당한다. CLI 옵션이나 결과 필드를 바꾸면 `docs/reference.md`도 고친다.
 
 ## 명령
 
@@ -31,6 +31,8 @@ CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `verify-build`, `profil
 - **빌드 검증** (`verify.py`): `run`의 본문은 `cli.run_once(args) -> (result, exit_code)`로 분리되어 있고 `run`과 `verify-build`가 함께 쓴다. `verify-build`는 `run_once`를 주입받아 N회 반복하고(`environment` 실패 즉시 중단, `automation` 연속 2회 중단) `report.json`/`report.md`와 결정(`promote`, `baseline_ok`, `needs_profile_fix`, `product_failure`, `flaky`, `environment_blocked`)을 만든다. `promote`일 때만 `proposal/`(프로필 JSON + 골든)을 쓰고 코드와 내장 프로필은 절대 수정하지 않는다. 상태 파일은 임시 파일 + `os.replace`로 쓴다. 종료 코드 3은 환경 문제다(2는 `run`의 기능 판정 근거 없음).
 - **기능 검사** (`checks.py`): `--checks-file` JSON(`schema_version: 1`)을 읽는다. `source: hal`은 `vendor`(`exynos`/`qualcomm`)가 필수이고, `source: app`은 `vendor`가 없어야 한다. 같은 이름에 vendor별 정의를 둘 수 있고, 감지된 SoC로 하나를 고른다. 판정은 녹화 시작 시각 이후 해당 태그 로그에 정규식이 매칭되는지로 한다.
 - **HAL 시험** (`hal.py`): `begin`이 기기 시각을 기록한 trial JSON을 만들고, `collect`가 그 이후 logcat을 저장한다. `compare`는 저장된 `threadtime` 로그만 읽으므로 ADB 없이 동작한다.
+- **안내 표** (`guidance.py`): 모든 오류 코드와 `verify-build` 결정에 한국어 `next_action`을 붙인다. `next_action(code, result)`가 결과 맥락(앞 화면 앱, 설치·검증 버전, 선택자 후보, 첨부할 파일)을 반영한다. 영어 `error.message`는 바꾸지 않는다. 새 오류 코드를 추가하면 `GUIDANCE`에도 항목을 넣어야 하며, 테스트가 `CLASS_BY_CODE`와 소스의 `RunError(`/`MediaError(`/`HalError(` 코드의 누락을 잡는다.
+- **doctor** (`doctor.py`): 읽기 전용 환경 점검(python, adb, devices, device, camera_app, phone_state). `adb version`, `devices -l`, `mdns services`, getprop, dumpsys, df만 쓰며 탭·앱 실행·화면 캡처·녹화는 하지 않는다. 앞 단계가 실패하면 뒤 단계는 `skip`이다. 테스트가 mock의 기록으로 이를 검증한다.
 - **logcat 형식** (`logcat.py`): 태그·시각·`threadtime` 줄 정규식을 수집, 비교, 검사가 공유한다. 연도 없는 시각 간 경과 시간(`elapsed_ms`)도 여기서 계산한다.
 - **영상 검증** (`media.py`): ADB 없이 MP4 박스(`ftyp`, `moov/mvhd`, `trak/{tkhd,mdhd,hdlr,stsd,stts}`)를 읽어 `inspect(path)`가 길이·트랙·fps를 돌려주고, `verdict(info, requested_seconds)`가 `MEDIA_*` 실패와 경고를 정한다. 임계값은 파일 위쪽 상수다. `run --verify-media`가 이를 호출하고, `run`은 항상 `result["metrics"]`에 시작·종료 지연을 기록한다(갤럭시 시나리오의 `record`).
 

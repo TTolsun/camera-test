@@ -9,23 +9,25 @@ import sys
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
-from . import media, preflight, screens, verify
+from . import doctor, media, preflight, screens, verify
 from .checks import load_checks, resolve_check
 from .failures import failure_class
+from .guidance import PYZ, error_object, next_action
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
 from .logcat import LOG_LINE
 from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
     status = {"name": name, "status": "unknown", "reason": skip_reason or "UI_SCAN_SKIPPED"}
     result = {"scenario": status}
     if version is None:
-        status.update(status="unavailable", reason="CAMERA_APP_NOT_FOUND")
+        status.update(status="unavailable", reason="CAMERA_APP_NOT_FOUND",
+                      next_action=next_action("CAMERA_APP_NOT_FOUND"))
         return result
     status["profile"] = profile.summary(version)
     if skip_reason is None:
@@ -40,6 +42,9 @@ def inspect_scenario(device, name, scenario, profile, version, skip_reason):
         # The mode was found with the profile's selectors, so a verification run is worth trying.
         status.update(status="unverified" if status["status"] == "runnable" else "unavailable",
                       reason="UNSUPPORTED_CAMERA_VERSION")
+    if status["status"] != "runnable":
+        context = {"scenario": name, "device": {"camera_version": version}, "profile": status.get("profile")}
+        status["next_action"] = next_action(status["reason"], context)
     return result
 
 
@@ -277,7 +282,11 @@ def run(args, checks, result, output):
 
 def classify(result):
     if "error" in result:
-        result["failure_class"] = failure_class(result["error"]["code"], result.get("diagnosis"))
+        code = result["error"]["code"]
+        result["failure_class"] = failure_class(code, result.get("diagnosis"))
+        result["next_action"] = next_action(code, result)
+    elif "log_capture_error" in result:
+        result["next_action"] = next_action(result["log_capture_error"], result)
 
 
 def read_checks(path):
@@ -371,24 +380,40 @@ def run_profile(args):
             args.output.write_text(text, encoding="utf-8")
             result, exit_code = {"scenario": args.scenario, "profile_file": str(args.output.resolve())}, 0
         except OSError as exc:
-            result, exit_code = {"error": {"code": "IO_ERROR", "message": str(exc)}}, 1
+            result, exit_code = {"error": error_object("IO_ERROR", str(exc))}, 1
     else:
         try:
             profile = read_profile_file(args.path)
             result = {"valid": True, "scenario": profile.scenario, "verified_versions": list(profile.verified_versions)}
             exit_code = 0
         except RunError as exc:
-            result, exit_code = {"valid": False, "error": {"code": exc.code, "message": str(exc)}}, 1
+            result, exit_code = {"valid": False, "error": error_object(exc.code, str(exc))}, 1
     print(json.dumps(result))
     return exit_code
 
 
+def examples(*lines):
+    """Epilog with real commands; RawDescriptionHelpFormatter keeps the line breaks."""
+    return {"formatter_class": argparse.RawDescriptionHelpFormatter,
+            "epilog": "examples:\n" + "\n".join(f"  {PYZ} {line}" for line in lines)}
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Run repeatable camera scenarios on an ADB device.")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")  # --help and guidance never crash on a narrow console encoding.
+    parser = argparse.ArgumentParser(
+        description="Run repeatable camera scenarios on an ADB device. "
+                    "처음이면 `doctor`로 환경을 점검하세요: python camera-test.pyz doctor",
+        **examples("doctor", "inspect --pretty", "run galaxy.portrait-video --duration 5 --verify-media --cleanup-video"))
     parser.add_argument("--version", action="version", version=VERSION)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="List runnable scenarios as JSON.")
-    inspection = commands.add_parser("inspect", help="Discover modes and compatible checks on the attached device.")
+    health = commands.add_parser("doctor", help="Check Python, ADB, phone connection, camera app and phone state (read-only).",
+                                 **examples("doctor", "doctor --json", "doctor --device 192.168.35.18:45483"))
+    health.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
+    health.add_argument("--json", action="store_true", help="Print checks as JSON for scripts and agents.")
+    inspection = commands.add_parser("inspect", help="Discover modes and compatible checks on the attached device.",
+                                     **examples("inspect --pretty", "inspect --no-ui", "inspect --device 192.168.35.18:45483"))
     inspection.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
     inspection.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
     inspection.add_argument("--no-ui", action="store_true", help="Read device and camera service information without opening Camera.")
@@ -403,7 +428,9 @@ def main():
     validate.add_argument("path", type=Path)
     screen_cmd = commands.add_parser("screens", help="Create and compare golden UI snapshot sets without ADB.")
     screen_commands = screen_cmd.add_subparsers(dest="screens_command", required=True)
-    promote = screen_commands.add_parser("promote", help="Turn a passing run that used --capture-screens into a golden set.")
+    promote = screen_commands.add_parser("promote", help="Turn a passing run that used --capture-screens into a golden set.",
+                                     **examples("screens promote --run runs/<run-id> --output golden/galaxy.portrait-video/17.0.00.43",
+                                                "screens promote --run runs/<run-id> --output golden/galaxy.portrait-video/17.0.00.43 --merge"))
     promote.add_argument("--run", type=Path, required=True, help="Run folder, e.g. runs/<run-id>.")
     promote.add_argument("--output", type=Path, required=True, help="Golden set folder to create.")
     promote.add_argument("--force", action="store_true", help="Replace an existing golden set.")
@@ -433,7 +460,10 @@ def main():
     compare.add_argument("--expect-log", help="Regular expression expected in ON messages for --tag.")
     compare.add_argument("--control-tag", help="Tag for a signal expected in both trials.")
     compare.add_argument("--control-log", help="Message regular expression expected in both trials.")
-    command = commands.add_parser("run", help="Run a camera scenario and emit a short JSON result.")
+    command = commands.add_parser("run", help="Run a camera scenario and emit a short JSON result.",
+                                **examples("run galaxy.portrait-video --duration 5 --verify-media --cleanup-video",
+                                           "run galaxy.portrait-video --require-idle --device 192.168.35.18:45483",
+                                           "run galaxy.portrait-video --capture-screens --cleanup-video"))
     command.add_argument("scenario", choices=tuple(SCENARIOS))
     command.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
     command.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5)
@@ -454,7 +484,10 @@ def main():
                          help="Run even when the app version is not in the profile's verified_versions.")
     command.add_argument("--require-idle", action="store_true",
                          help="Stop with PRECHECK_DEVICE_BUSY when an app other than the camera or the launcher is in the foreground.")
-    verify_cmd = commands.add_parser("verify-build", help="Repeat a scenario on the installed app build and decide what a human must do.")
+    verify_cmd = commands.add_parser("verify-build", help="Repeat a scenario on the installed app build and decide what a human must do.",
+                                    **examples("verify-build galaxy.portrait-video --repeat 5",
+                                               "verify-build galaxy.portrait-video --golden golden/galaxy.portrait-video/17.0.00.43 --baseline runs/verify/<batch-id>/report.json",
+                                               "verify-build galaxy.portrait-video --state-file verify-state.json --if-changed"))
     verify_cmd.add_argument("scenario", choices=tuple(SCENARIOS))
     verify_cmd.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
     verify_cmd.add_argument("--repeat", type=int, choices=range(1, 51), metavar="N", default=5, help="Iterations (1-50).")
@@ -472,11 +505,17 @@ def main():
         return 0
     if args.command == "profile":
         return run_profile(args)
+    if args.command == "doctor":
+        result, exit_code = doctor.run_doctor(args)
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else doctor.render_text(result))
+        return exit_code
     if args.command == "screens":
         try:
             result, exit_code = run_screens(args), 0
         except (RunError, OSError) as exc:
-            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc))}
             exit_code = 1
         print(json.dumps(result, ensure_ascii=False))
         return exit_code
@@ -484,7 +523,7 @@ def main():
         try:
             result, exit_code = media.inspect(args.path), 0
         except (media.MediaError, OSError) as exc:
-            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc))}
             exit_code = 1
         print(json.dumps(result))
         return exit_code
@@ -492,7 +531,7 @@ def main():
         try:
             result, exit_code = run_hal(args)
         except (HalError, RunError, OSError) as exc:
-            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc))}
             exit_code = 1
         print(json.dumps(result))
         return exit_code
@@ -501,7 +540,7 @@ def main():
             result = inspect_device(args, read_checks(args.checks_file))
             exit_code = 0
         except (RunError, OSError) as exc:
-            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc))}
             exit_code = 1
         if args.pretty and hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8")
@@ -513,7 +552,7 @@ def main():
         try:
             result, exit_code = verify.verify_build(args, run_once, VERSION)
         except (RunError, OSError) as exc:
-            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)[:240]}}
+            result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc)[:240])}
             exit_code = 1
         print(json.dumps(result, ensure_ascii=False))
         return exit_code

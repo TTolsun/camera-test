@@ -7,6 +7,7 @@ description: Discover available camera modes and run repeatable Galaxy camera ch
 
 저장소 루트에서 실행합니다. Agent가 원격이라면 ADB로 실기기에 연결된 PC에서 명령을 실행하는 사내 도구를 사용합니다.
 
+0. 환경(ADB, 단말 연결, 카메라 앱 버전, 단말 상태)을 모르면 먼저 `python camera_test.py doctor --json`을 실행합니다. 읽기 전용이라 어떤 단말에서도 안전합니다. `ready`가 `false`이면 `next_action`(검사별 `next_action` 포함)을 **그대로 사용자에게 전달**하고 임의로 우회하지 않습니다. 도구가 출력하는 모든 `error.next_action`, 결과의 `next_action`, `scenario.next_action`, `verify-build` 요약의 `next_action`도 같은 방식으로 전달합니다.
 1. `python camera_test.py inspect`로 기기, SoC, 관찰된 카메라 모드, 실행 가능한 시나리오를 확인합니다. 팀 검사 파일이 있으면 `--checks-file <path>`를 추가합니다. 특정 기기를 요청받았거나 여러 기기가 연결되어 있으면 `--device <serial>`을 지정합니다. 화면 탐색을 피해야 하는 요청에는 `inspect --no-ui`를 사용합니다.
 2. `scenario.status`가 `runnable`이고 이름이 요청과 일치하면 `python camera_test.py run galaxy.portrait-video --duration 5`처럼 실행합니다. `unverified`이면 앱 버전이 프로필의 검증 목록에 없는 상태이므로, 사용자에게 보고하고 검증 실행을 요청받은 경우에만 `--allow-unverified-version`을 추가합니다. 실패 결과는 먼저 `failure_class`로 나눕니다. `environment`(`PRECHECK_*` 포함: 화면 꺼짐, 잠금, 저장 공간 부족)는 사용자에게 단말 상태를 고치도록 안내하고, `automation`은 `diagnosis`를 `camera-ui-diagnostics` 스킬로 분석하며, `product`는 앱 동작 문제로 로그와 함께 보고합니다. 발견된 모드와 등록된 시나리오가 다르면 관찰 결과와 지원 범위를 보고합니다. 빌드 배포나 기능 설정을 요청받았다면 해당 개발 프로젝트의 설정 절차를 먼저 적용합니다.
 3. 특정 기능을 확인하려면 `--check <name>`과 팀 검사 파일 경로를 사용합니다. `checks.registered_for_device`에서 현재 SoC에 적용되는 정의를 확인합니다. 검사 파일은 `--checks-file <path>`로 전달합니다. 결과가 `UNVERIFIED`이면 `feature.reason`을 보고합니다. HAL 검사 정의 형식은 [참조 문서](../../docs/reference.md#hal과-앱-로그-검사)에 있습니다. 오류 코드와 결과 필드도 같은 문서에서 찾습니다.
