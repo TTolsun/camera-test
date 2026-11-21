@@ -9,7 +9,7 @@ import sys
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
-from . import preflight, screens
+from . import media, preflight, screens
 from .checks import load_checks, resolve_check
 from .failures import failure_class
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
@@ -18,7 +18,7 @@ from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file
 
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
@@ -143,6 +143,37 @@ def cleanup_video(device, result):
         warn(result, "VIDEO_CLEANUP_FAILED")
 
 
+def pull_video(device, clip, result):
+    """Copy the new MP4 to `clip` and check its size against the device file. Removes a bad copy."""
+    try:
+        device.pull(result["video"]["device_path"], clip)
+        if clip.stat().st_size != result["video"]["bytes"]:
+            raise RunError("VIDEO_COPY_INCOMPLETE", "Local MP4 size does not match the device file.")
+    except (RunError, OSError):
+        clip.unlink(missing_ok=True)
+        raise
+
+
+def verify_media(clip, seconds, result):
+    """Parse the pulled MP4 and fail the run on a broken recording. Warnings go to result["warnings"]."""
+    try:
+        info = media.inspect(clip)
+    except media.MediaError as exc:
+        result["media"] = {"error": exc.code}
+        raise fail_media(result, exc.code, str(exc))
+    failures, warnings = media.verdict(info, seconds)
+    result["media"] = {**info, "checks": media.check_summary(failures, warnings)}
+    for code, _ in warnings:
+        warn(result, code)
+    if failures:
+        raise fail_media(result, *failures[0])
+
+
+def fail_media(result, code, message):
+    result["scenario_status"] = "FAIL"
+    return RunError(code, message)
+
+
 def finish_screens(profile, golden, output, saved, result):
     """Record the captured checkpoints and, when a golden set is given, attach the drift report."""
     result["screens"] = list(saved)
@@ -212,20 +243,24 @@ def run(args, checks, result, output):
                     result["feature"].pop("reason", None)
                 else:
                     result["feature"]["reason"] = "EXPECTED_LOG_NOT_FOUND"
-            if args.pull_video:
+            if args.pull_video or args.verify_media:
                 clip = output / scenario.video_filename
-                try:
-                    device.pull(result["video"]["device_path"], clip)
-                    if clip.stat().st_size != result["video"]["bytes"]:
-                        raise RunError("VIDEO_COPY_INCOMPLETE", "Local MP4 size does not match the device file.")
-                except (RunError, OSError):
-                    clip.unlink(missing_ok=True)
-                    raise
-                result["artifacts"]["video"] = str(clip)
+                pull_video(device, clip, result)
+                if args.pull_video:
+                    result["artifacts"]["video"] = str(clip)
+                if args.verify_media:
+                    try:
+                        verify_media(clip, args.duration, result)
+                    except RunError:
+                        result["artifacts"]["video"] = str(clip)  # Keep a rejected MP4 as evidence.
+                        raise
+                    if not args.pull_video:
+                        clip.unlink(missing_ok=True)
+            # The device file is deleted only after the pull and the media check finished.
             if args.cleanup_video:
                 cleanup_video(device, result)
         except (RunError, KeyboardInterrupt):
-            if result["scenario_status"] != "PASS":
+            if result["scenario_status"] != "PASS" and "media" not in result:
                 capture_failure(device, profile.package, output, result)
                 diagnose_failure(device, scenario, profile, output, result)
             raise
@@ -343,6 +378,10 @@ def main():
     screen_compare.add_argument("--golden", type=Path, required=True)
     screen_compare.add_argument("--run", type=Path, required=True)
     screen_compare.add_argument("--profile-file", type=Path, help="Profile the run used, when it was not the built-in one.")
+    media_cmd = commands.add_parser("media", help="Inspect saved recordings without ADB.")
+    media_commands = media_cmd.add_subparsers(dest="media_command", required=True)
+    media_inspect = media_commands.add_parser("inspect", help="Print brand, duration and tracks of an MP4 as JSON.")
+    media_inspect.add_argument("path", type=Path)
     hal = commands.add_parser("hal", help="Capture and compare Camera HAL logcat trials.")
     hal_commands = hal.add_subparsers(dest="hal_command", required=True)
     begin = hal_commands.add_parser("begin", help="Mark the start of an OFF or ON trial.")
@@ -365,6 +404,8 @@ def main():
     command.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5)
     command.add_argument("--output-dir", type=Path, default=Path("runs"))
     command.add_argument("--pull-video", action="store_true", help="Also copy the new MP4 to the run folder.")
+    command.add_argument("--verify-media", action="store_true",
+                         help="Copy the new MP4, parse it and fail the run on no video, no frames or a wrong length.")
     command.add_argument("--check", help="Optional named feature check.")
     command.add_argument("--checks-file", type=Path, help="JSON definitions for named log checks.")
     command.add_argument("--profile-file", type=Path, help="App profile JSON for this scenario, e.g. one adjusted for a new app build.")
@@ -389,6 +430,14 @@ def main():
             result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
             exit_code = 1
         print(json.dumps(result, ensure_ascii=False))
+        return exit_code
+    if args.command == "media":
+        try:
+            result, exit_code = media.inspect(args.path), 0
+        except (media.MediaError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)}}
+            exit_code = 1
+        print(json.dumps(result))
         return exit_code
     if args.command == "hal":
         try:

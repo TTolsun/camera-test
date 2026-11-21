@@ -77,7 +77,7 @@ Android 버전에 따라 해당 줄이 없으면 그 항목은 `unknown`으로 �
 |---|---|---|
 | `environment` | 단말·연결·권한 등 실행 환경 문제입니다. | `ADB_*`, `NO_DEVICE`, `DEVICE_*`, `PRECHECK_*`, `CAMERA_NOT_FOREGROUND`, `CAMERA_APP_NOT_FOUND`, `UI_UNAVAILABLE`, `IO_ERROR`, `VIDEO_COPY_INCOMPLETE`, `INTERRUPTED` |
 | `automation` | 선택자, 프로필, 로그 패턴이 앱과 맞지 않습니다. 프로필을 고칩니다. | `MODE_NOT_FOUND`, `MODE_NOT_READY`, `INVALID_UI_BOUNDS`, `UNSUPPORTED_CAMERA_VERSION`, `INVALID_PROFILE_FILE`, `INVALID_CHECKS_FILE`, `INVALID_GOLDEN`, 그리고 `diagnosis.record_state_log`가 `lines > 0`, `matched == 0`인 `RECORD_START_UNVERIFIED` |
-| `product` | 녹화, 종료, 저장이 실제로 실패했습니다. 앱 동작을 조사합니다. | `RECORD_START_UNVERIFIED`(로그 패턴 변경 증거 없음), `RECORDING_ENDED_EARLY`, `RECORD_STOP_UNVERIFIED`, `VIDEO_NOT_SAVED`, `AMBIGUOUS_VIDEO`, `CAMERA_LAUNCH_FAILED`, `CAMERA_PID_NOT_FOUND`, `CLEANUP_UNVERIFIED` |
+| `product` | 녹화, 종료, 저장이 실제로 실패했습니다. 앱 동작을 조사합니다. | `RECORD_START_UNVERIFIED`(로그 패턴 변경 증거 없음), `RECORDING_ENDED_EARLY`, `RECORD_STOP_UNVERIFIED`, `VIDEO_NOT_SAVED`, `AMBIGUOUS_VIDEO`, `CAMERA_LAUNCH_FAILED`, `CAMERA_PID_NOT_FOUND`, `CLEANUP_UNVERIFIED`, `MEDIA_NO_MOOV`, `MEDIA_MALFORMED`, `MEDIA_NO_VIDEO`, `MEDIA_NO_FRAMES`, `MEDIA_DURATION` |
 
 표에 없는 코드는 `unknown`입니다.
 
@@ -123,6 +123,41 @@ PASS한 실행도 앱 UI가 바뀌었는지는 알려 주지 않습니다. 기�
 
 `run --cleanup-video`는 검증(그리고 `--pull-video` 복사)이 끝난 뒤, 이번 실행이 만든 MP4의 정확한 경로(`video.device_path`) 하나만 단말에서 삭제하고 `video.deleted`에 결과를 기록합니다. 와일드카드는 쓰지 않습니다. 삭제에 실패하면 `warnings`에 `VIDEO_CLEANUP_FAILED`를 추가할 뿐 실행 결과는 바꾸지 않습니다. 파일 시스템에서 직접 지우므로 갤러리 색인에는 잠시 항목이 남을 수 있습니다.
 
+## 영상 검증(--verify-media)과 측정값
+
+기본 판정은 녹화 상태 로그와 새 MP4의 저장 여부만 봅니다. 프레임이 없거나 길이가 틀린 영상, `moov`가 없는 잘린 파일도 통과할 수 있으므로 `run --verify-media`로 파일 내용을 확인합니다. 영상 저장이 확인되면 MP4를 실행 폴더로 복사하고(크기 확인은 `--pull-video`와 같습니다) 표준 라이브러리만으로 박스 구조를 읽습니다. `mdat`는 건너뛰므로 큰 파일도 전부 메모리에 올리지 않습니다.
+
+```powershell
+python camera-test.pyz run galaxy.portrait-video --duration 5 --verify-media
+python camera-test.pyz media inspect runs/<run-id>/portrait-video.mp4
+```
+
+`result["media"]`에는 `brand`, `duration_s`, `tracks`(각각 `type`, `codec`, `duration_s`, `width`, `height`, `sample_count`, `fps`)와 `checks`가 들어갑니다. `type`은 `vide`가 `video`, `soun`이 `audio`로 표시되고, 다른 핸들러는 4글자 코드 그대로입니다. 실수는 소수 셋째 자리까지 반올림하며, 비디오가 아닌 트랙의 `width`, `height`, `fps`는 `null`입니다. `media inspect`는 ADB 없이 같은 정보를 출력하고, 읽을 수 없으면 `error` 객체와 종료 코드 `1`을 반환합니다.
+
+| 검사(`checks`) | 오류 코드 | 조건 |
+|---|---|---|
+| `video_track` | `MEDIA_NO_VIDEO` | 비디오 트랙이 없습니다. |
+| `frames` | `MEDIA_NO_FRAMES` | 비디오 샘플(`stts` 합계)이 0개입니다. |
+| `duration` | `MEDIA_DURATION` | 파일 길이가 `요청 초 - 0.5 s` ~ `요청 초 + 2.0 s` 밖입니다. |
+| `audio` | `MEDIA_NO_AUDIO` | 오디오 트랙이 없습니다. 카메라 설정에서 소리를 끌 수 있으므로 실패가 아니라 `warnings`에만 추가합니다. |
+| (파싱) | `MEDIA_NO_MOOV`, `MEDIA_MALFORMED` | `moov`가 없거나(녹화가 끝까지 기록되지 않은 파일에서 흔합니다), 박스 크기가 부모를 넘는 등 구조가 깨졌습니다. |
+
+각 검사는 `PASS`, `FAIL`, `WARN` 중 하나이며, 비디오 트랙이 없으면 `frames`는 `SKIPPED`입니다. 실패하면 `scenario_status`는 `FAIL`, 종료 코드는 `1`이고 `failure_class`는 `product`입니다. 임계값은 `camera_runner/media.py` 위쪽의 `DURATION_SHORT_TOLERANCE_S`, `DURATION_LONG_TOLERANCE_S`입니다. 실기기(SM-S936N, 카메라 17.0.00.43)에서 5초로 녹화한 파일은 5.173초(HEVC 1920x1080, 29.6 fps, AAC 오디오)였습니다. 녹화는 시작 탭 뒤에 시작하고 종료 탭을 처리한 뒤에 끝나며 그 사이에 ADB 호출 시간이 들어가므로 파일은 요청보다 약간 길어지는 편이어서, 긴 쪽 여유를 더 넓게 잡았습니다.
+
+- `--pull-video` 없이 쓰면 검사 후 로컬 복사본을 지웁니다. 검사에 실패하면 증거로 남기고 `artifacts.video`에 경로를 기록합니다.
+- `--cleanup-video`와 함께 쓰면 복사와 검사가 끝난 뒤에만 단말 파일을 삭제합니다. 검사에 실패하면 단말 파일도 삭제하지 않습니다.
+- 조각난(fragmented) MP4는 `stbl`에 샘플이 없어 `MEDIA_NO_FRAMES`로 판정될 수 있습니다. 갤럭시 카메라 파일은 조각난 형식이 아닙니다.
+
+`run`은 별도 ADB 호출 없이 항상 `result["metrics"]`에 지연 시간(정수 ms)을 기록합니다. 계산할 수 없는 값은 추측하지 않고 키를 생략합니다.
+
+| 키 | 측정 구간 |
+|---|---|
+| `record_start_latency_ms` | 시작 탭 직전에 읽은 기기 시각부터 녹화 상태 로그의 `RECORDING` 전환 줄까지입니다. |
+| `record_stop_latency_ms` | 종료 탭 직전에 읽은 기기 시각부터 `STOPPING -> IDLE` 줄까지입니다. |
+| `video_ready_ms` | 종료 탭 직전부터 새 MP4의 크기가 안정되었음을 확인할 때까지이며 PC의 단조 시계로 잽니다. 크기 안정 확인 폴링(0.25초 간격)이 들어가므로 거친 값입니다. |
+
+앞의 두 값은 기기 시계와 logcat 시각(`MM-DD HH:MM:SS.mmm`, 연도 없음)의 차이입니다. 기기 시각을 읽은 뒤 탭이 전달되기까지의 ADB 왕복 시간이 포함되므로, 빌드끼리 비교할 때는 같은 연결 방식에서 측정합니다. 두 시각을 같은 해로 해석하므로 해를 넘기는 구간처럼 뒤 시각이 앞서면 값을 생략합니다.
+
 ## Qualcomm과 Exynos의 HAL 검사 등록
 
 `hal begin`과 `hal collect`로 기능 OFF·ON 각각의 로그를 저장하고, `hal compare`로 태그별 차이 또는 적용 패턴을 확인합니다. `hal compare`는 저장된 `threadtime` 로그만 사용합니다. [ON/OFF 로그 수집 및 검사 작성 절차](docs/exynos-hal-validation.md)
@@ -167,4 +202,5 @@ python camera-test.pyz inspect --pretty
 - `camera_runner/adb.py`는 기기 선택과 ADB 통신, UI 덤프, 로그 수집을 담당합니다.
 - `camera_runner/scenarios/`는 앱별 촬영과 판정을 담당합니다. 이 폴더의 등록 목록을 `list`, `inspect`, `run`이 함께 사용합니다. 새 시나리오는 구현을 추가하고 `camera_runner/scenarios/__init__.py`에 등록합니다.
 - `camera_runner/preflight.py`, `camera_runner/failures.py`, `camera_runner/screens.py`는 각각 실행 전 환경 점검, 실패 분류표, 화면 스냅샷·골든 비교를 담당합니다.
+- `camera_runner/media.py`는 MP4 박스 파서와 영상 판정을, `camera_runner/logcat.py`는 logcat 정규식과 시각 계산을 담당합니다.
 - `camera_runner/checks.py`와 `camera_runner/hal.py`는 각각 검사 정의와 HAL 로그 수집·비교를 담당합니다.

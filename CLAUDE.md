@@ -20,7 +20,7 @@ python build.py camera-test.pyz                          # 배포용 단일 실�
 
 ## 아키텍처
 
-CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `profile {show,validate}`, `screens {promote,compare}`, `hal {begin,collect,compare}` 하위 명령을 제공하고, 결과를 JSON으로 stdout에 출력한다. 오류는 `RunError(code, message)`로 올라와 JSON의 오류 코드가 된다.
+CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `profile {show,validate}`, `screens {promote,compare}`, `media inspect`, `hal {begin,collect,compare}` 하위 명령을 제공하고, 결과를 JSON으로 stdout에 출력한다. 오류는 `RunError(code, message)`로 올라와 JSON의 오류 코드가 된다.
 
 - **ADB 전송 계층** (`adb.py`): 모든 기기 통신은 모듈 함수 `adb.adb(*args)` 하나를 거친다. `Device`는 그 위에서 shell, UI 덤프, logcat, pull을 제공한다. `device_lock`은 임시 디렉터리 파일 잠금으로 같은 기기에 대한 동시 실행을 막는다(`DEVICE_BUSY`). `select_device`는 무선 디버깅이 한 기기를 두 번 나열해도 `ro.serialno`가 같으면 `ip:port` 쪽을 고른다(기기가 둘 이상일 때만 `getprop`을 호출한다).
 - **시나리오 레지스트리** (`scenarios/__init__.py`): `SCENARIOS` dict 하나를 `list`, `inspect`, `run`이 공유한다. 시나리오는 `scan(device, profile)`(모드 탐색)과 `execute(device, profile, seconds, result)`(녹화 후 녹화 시작 시각 반환)를 제공하고, 선택적으로 `phases`(단계 이름 → 그 단계가 의존하는 프로필 선택자 키)를 선언한다. `execute`는 `device.phase`를 갱신하고, UI를 덤프한 직후 `device.checkpoint(name)`을 호출해 화면 스냅샷을 남긴다(녹화 중에는 덤프하지 않는다).
@@ -30,7 +30,8 @@ CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `profile {show,validate
 - **화면 스냅샷** (`screens.py`): `run --capture-screens`가 `runs/<id>/screens/*.json`(앱 패키지 노드의 id·text·desc·class만)을 저장하고, `screens promote`가 PASS 실행을 골든 폴더(`golden.json` 포함)로 만들며, `screens compare`와 `run --golden`이 ADB 없이 `breaking`/`cosmetic`/`none` 변화를 판정한다. 변화는 `scenario_status`와 종료 코드에 영향을 주지 않고 `drift`와 `warnings`로만 나온다.
 - **기능 검사** (`checks.py`): `--checks-file` JSON(`schema_version: 1`)을 읽는다. `source: hal`은 `vendor`(`exynos`/`qualcomm`)가 필수이고, `source: app`은 `vendor`가 없어야 한다. 같은 이름에 vendor별 정의를 둘 수 있고, 감지된 SoC로 하나를 고른다. 판정은 녹화 시작 시각 이후 해당 태그 로그에 정규식이 매칭되는지로 한다.
 - **HAL 시험** (`hal.py`): `begin`이 기기 시각을 기록한 trial JSON을 만들고, `collect`가 그 이후 logcat을 저장한다. `compare`는 저장된 `threadtime` 로그만 읽으므로 ADB 없이 동작한다.
-- **logcat 형식** (`logcat.py`): 태그·시각·`threadtime` 줄 정규식을 수집, 비교, 검사가 공유한다.
+- **logcat 형식** (`logcat.py`): 태그·시각·`threadtime` 줄 정규식을 수집, 비교, 검사가 공유한다. 연도 없는 시각 간 경과 시간(`elapsed_ms`)도 여기서 계산한다.
+- **영상 검증** (`media.py`): ADB 없이 MP4 박스(`ftyp`, `moov/mvhd`, `trak/{tkhd,mdhd,hdlr,stsd,stts}`)를 읽어 `inspect(path)`가 길이·트랙·fps를 돌려주고, `verdict(info, requested_seconds)`가 `MEDIA_*` 실패와 경고를 정한다. 임계값은 파일 위쪽 상수다. `run --verify-media`가 이를 호출하고, `run`은 항상 `result["metrics"]`에 시작·종료 지연을 기록한다(갤럭시 시나리오의 `record`).
 
 ## 테스트 방식
 

@@ -4,7 +4,7 @@ import re
 import time
 
 from ..adb import RunError
-from ..logcat import LOG_LINE
+from ..logcat import LOG_LINE, elapsed_ms, line_stamp
 
 
 # Built-in profile. The selectors, labels and recording-state log were confirmed on SM-S936N
@@ -232,11 +232,17 @@ def videos(device):
     return {line for line in listing.splitlines() if line.startswith("/sdcard/DCIM/Camera/")}
 
 
-def record_transitions(device, profile, since, pid):
+def record_events(device, profile, since, pid):
+    """Yield (log timestamp, (from_state, to_state)) for this process's recording-state changes."""
     for line in device.logs(since, (profile.record_state_tag,)).splitlines():
         entry = LOG_LINE.match(line)
         if entry and entry[1] == pid and (transition := profile.record_state_pattern.search(entry[3])):
-            yield transition.groups()
+            yield line_stamp(line), transition.groups()
+
+
+def record_transitions(device, profile, since, pid):
+    for _, transition in record_events(device, profile, since, pid):
+        yield transition
 
 
 def latest_record_state(device, profile, since, pid):
@@ -246,6 +252,25 @@ def latest_record_state(device, profile, since, pid):
 
 def recording_finished(device, profile, since, pid):
     return ("STOPPING", "IDLE") in record_transitions(device, profile, since, pid)
+
+
+def recording_started_event(device, profile, since, pid):
+    """{"stamp": ...} when the latest state change enters RECORDING, else None. Reuses the poll's log read."""
+    events = list(record_events(device, profile, since, pid))
+    return {"stamp": events[-1][0]} if events and events[-1][1][1] == "RECORDING" else None
+
+
+def recording_finished_event(device, profile, since, pid):
+    """{"stamp": ...} of the first STOPPING -> IDLE change, else None."""
+    stamp = next((stamp for stamp, transition in record_events(device, profile, since, pid)
+                  if transition == ("STOPPING", "IDLE")), False)
+    return None if stamp is False else {"stamp": stamp}
+
+
+def add_metric(result, name, value):
+    """Store an integer-millisecond metric; a value that could not be computed is left out."""
+    if value is not None:
+        result.setdefault("metrics", {})[name] = value
 
 
 def verify_video(device, before):
@@ -278,13 +303,16 @@ def record(device, profile, point, seconds, result):
     baseline = videos(device)
     start_clock = device.clock()
     stop_attempted = False
+    stop_began = None
     ended = False
     armed = False
     try:
         armed = True
         device.tap(point)
-        wait_for(lambda: latest_record_state(device, profile, start_clock, pid) == "RECORDING", 5,
-                 "RECORD_START_UNVERIFIED", "Camera log did not confirm the recording start.")
+        started = wait_for(lambda: recording_started_event(device, profile, start_clock, pid), 5,
+                           "RECORD_START_UNVERIFIED", "Camera log did not confirm the recording start.")
+        # start_clock is read on the device just before the tap, so this includes one ADB round trip.
+        add_metric(result, "record_start_latency_ms", elapsed_ms(start_clock, started["stamp"]))
         result["steps"].append("recording_started")
         time.sleep(seconds)
         require_foreground(device, profile)
@@ -292,9 +320,11 @@ def record(device, profile, point, seconds, result):
             raise RunError("RECORDING_ENDED_EARLY", "The camera stopped recording before the planned stop.")
         stop_clock = device.clock()
         stop_attempted = True
+        stop_began = time.monotonic()
         device.tap(point)
-        wait_for(lambda: recording_finished(device, profile, stop_clock, pid),
-                 6, "RECORD_STOP_UNVERIFIED", "Camera log did not confirm that recording ended.")
+        finished = wait_for(lambda: recording_finished_event(device, profile, stop_clock, pid),
+                            6, "RECORD_STOP_UNVERIFIED", "Camera log did not confirm that recording ended.")
+        add_metric(result, "record_stop_latency_ms", elapsed_ms(stop_clock, finished["stamp"]))
         ended = True
         result["steps"].append("recording_stopped")
     finally:
@@ -314,6 +344,8 @@ def record(device, profile, point, seconds, result):
             except RunError:
                 pass
     result["video"] = verify_video(device, baseline)
+    # Host monotonic time from the stop tap, so it includes ADB overhead and the file-size stability polls.
+    add_metric(result, "video_ready_ms", round((time.monotonic() - stop_began) * 1000))
     result["steps"].append("video_saved")
     return start_clock
 

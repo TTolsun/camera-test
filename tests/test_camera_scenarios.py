@@ -13,13 +13,14 @@ import camera_test
 from camera_runner import adb
 from camera_runner.profiles import parse_profile
 from camera_runner.scenarios import SCENARIOS, Scenario, galaxy_portrait_video
+from tests.mp4_builder import audio_track, mp4, video_track
 
 
 GALAXY_SCENARIO = "galaxy.portrait-video"
 GALAXY_PACKAGE = "com.sec.android.app.camera"
 VIDEO_PATH = "/sdcard/DCIM/Camera/mock.mp4"
-STARTED = "11-21 09:10:12.100 1234 1234 I RecordingManager: changeRecordingState : STARTING -> RECORDING"
-STOPPED = "11-21 09:10:13.100 1234 1234 I RecordingManager: changeRecordingState : STOPPING -> IDLE"
+STARTED = "11-21 09:10:02.350 1234 1234 I RecordingManager: changeRecordingState : STARTING -> RECORDING"
+STOPPED = "11-21 09:10:03.900 1234 1234 I RecordingManager: changeRecordingState : STOPPING -> IDLE"
 
 
 def node(resource, attributes=""):
@@ -42,6 +43,8 @@ class MockCameraAdb:
         self.deleted = []
         self.rm_fails = False
         self.ui_failures = 0  # Portrait Video dumps that fail before one succeeds.
+        self.video_bytes = b"mock"  # Content of the pulled MP4; its length is also the device file size.
+        self.events = []  # Order of device-file operations that matter to --cleanup-video.
 
     def hierarchy(self):
         if self.mode == "portrait":
@@ -66,7 +69,8 @@ class MockCameraAdb:
             return b""
         if args[2] == "pull":
             assert args[3] == VIDEO_PATH and kwargs["timeout"] == 60
-            Path(args[4]).write_bytes(b"mock")
+            Path(args[4]).write_bytes(self.video_bytes)
+            self.events.append("pull")
             return ""
         assert args[2] == "shell", args
         remote = shlex.split(args[3])
@@ -102,7 +106,7 @@ class MockCameraAdb:
                 return self.record_log
             return STOPPED if remote[3] == "11-21 09:10:03.100" else STARTED
         if remote == ["stat", "-c", "%s", VIDEO_PATH]:
-            return "4"
+            return str(len(self.video_bytes))
         if remote[0] == "df":
             assert remote[1:] == ["-k", "/sdcard"]
             return ("Filesystem     1K-blocks    Used Available Use% Mounted on\n"
@@ -116,6 +120,7 @@ class MockCameraAdb:
                 if self.rm_fails:
                     raise adb.RunError("ADB_ERROR", "rm failed")
                 self.deleted.append(shlex.split(remote[2])[1])
+                self.events.append("rm")
                 return "deleted"
             if remote[2].startswith("uiautomator dump "):
                 if self.mode == "portrait" and self.ui_failures:
@@ -550,6 +555,73 @@ class EfficiencyCliTests(unittest.TestCase):
         code, result = self.run_scenario("--cleanup-video")
         self.assertEqual((code, result["scenario_status"]), (0, "PASS"))
         self.assertEqual((result["video"]["deleted"], result["warnings"]), (False, ["VIDEO_CLEANUP_FAILED"]))
+
+
+    def test_verify_media_passes_and_removes_the_local_copy_without_pull_video(self):
+        self.device.video_bytes = mp4([video_track(5.2), audio_track(5.2)], seconds=5.2)
+        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--verify-media")
+            self.assertEqual((code, result["scenario_status"]), (0, "PASS"))
+            self.assertEqual(result["media"]["checks"], {"video_track": "PASS", "frames": "PASS", "duration": "PASS", "audio": "PASS"})
+            self.assertEqual((result["media"]["brand"], result["media"]["duration_s"]), ("mp42", 5.2))
+            self.assertEqual(result["media"]["tracks"][0]["sample_count"], 156)
+            self.assertNotIn("video", result["artifacts"])
+            self.assertFalse((Path(output) / result["run_id"] / "portrait-video.mp4").exists())
+            self.assertNotIn("warnings", result)
+
+            self.device = MockCameraAdb()
+            self.device.video_bytes = mp4([video_track(5.2), audio_track(5.2)], seconds=5.2)
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--verify-media", "--pull-video")
+            self.assertEqual(code, 0)
+            self.assertTrue(Path(result["artifacts"]["video"]).is_file())
+
+    def test_verify_media_warns_about_missing_audio_without_failing(self):
+        self.device.video_bytes = mp4([video_track(5.2)], seconds=5.2)
+        code, result = self.run_scenario("--verify-media")
+        self.assertEqual((code, result["scenario_status"], result["warnings"]), (0, "PASS", ["MEDIA_NO_AUDIO"]))
+        self.assertEqual(result["media"]["checks"]["audio"], "WARN")
+
+    def test_wrong_duration_fails_as_a_product_problem_and_keeps_the_evidence(self):
+        self.device.video_bytes = mp4([video_track(9.0), audio_track(9.0)], seconds=9.0)
+        code, result = self.run_scenario("--verify-media", "--cleanup-video")
+        self.assertEqual((code, result["scenario_status"]), (1, "FAIL"))
+        self.assertEqual((result["error"]["code"], result["failure_class"]), ("MEDIA_DURATION", "product"))
+        self.assertEqual(result["media"]["checks"]["duration"], "FAIL")
+        self.assertNotIn("failure_screen", result["artifacts"])
+        self.assertTrue(result["artifacts"]["video"].endswith("portrait-video.mp4"))
+        self.assertEqual(self.device.deleted, [])  # The device file stays as evidence too.
+
+    def test_broken_files_fail_with_their_own_codes(self):
+        for data, code in ((mp4([], moov=False), "MEDIA_NO_MOOV"), (mp4([audio_track(5.2)], seconds=5.2), "MEDIA_NO_VIDEO"),
+                           (b"\x00\x00\x10\x00free", "MEDIA_MALFORMED")):
+            self.device = MockCameraAdb()
+            self.device.video_bytes = data
+            exit_code, result = self.run_scenario("--verify-media")
+            self.assertEqual((exit_code, result["error"]["code"], result["failure_class"]), (1, code, "product"))
+
+    def test_device_file_is_deleted_only_after_the_pull(self):
+        self.device.video_bytes = mp4([video_track(5.2), audio_track(5.2)], seconds=5.2)
+        code, result = self.run_scenario("--verify-media", "--cleanup-video")
+        self.assertEqual((code, self.device.events), (0, ["pull", "rm"]))
+        self.assertTrue(result["video"]["deleted"])
+
+    def test_latency_metrics_come_from_log_timestamps(self):
+        code, result = self.run_scenario()
+        # Start tap at 09:10:02.100 (device clock), RECORDING logged at 02.350; stop at 03.100, IDLE at 03.900.
+        self.assertEqual(code, 0)
+        self.assertEqual({key: result["metrics"][key] for key in ("record_start_latency_ms", "record_stop_latency_ms")},
+                         {"record_start_latency_ms": 250, "record_stop_latency_ms": 800})
+        self.assertIsInstance(result["metrics"]["video_ready_ms"], int)
+        self.assertGreaterEqual(result["metrics"]["video_ready_ms"], 0)
+
+    def test_metric_that_cannot_be_computed_is_omitted(self):
+        # A log stamped before the device clock (for example across New Year) cannot give a latency.
+        stamped_early = STARTED.replace("09:10:02.350", "09:09:00.000")
+        with patch.object(sys.modules[__name__], "STARTED", stamped_early):
+            code, result = self.run_scenario()
+        self.assertEqual(code, 0)
+        self.assertNotIn("record_start_latency_ms", result["metrics"])
+        self.assertEqual(result["metrics"]["record_stop_latency_ms"], 800)
 
 
 if __name__ == "__main__":
