@@ -1,6 +1,6 @@
 # 카메라 실기기 검증 도구
 
-개발자와 사내 AI Agent가 같은 명령으로 ADB에 연결된 갤럭시의 카메라 기능을 확인합니다. `inspect`는 기기와 모드를 확인합니다. `run`은 등록된 시나리오를 재현하고 로그와 결과를 저장합니다.
+개발자와 사내 AI Agent가 같은 명령으로 ADB에 연결된 갤럭시의 카메라 기능을 확인합니다. `inspect`는 기기와 모드를 확인합니다. `run`은 등록된 시나리오를 재현하고 로그와 결과를 저장합니다. `verify-build`는 새 앱 빌드를 반복 실행해 승인할 제안이나 분류된 실패 보고를 만듭니다.
 
 ## GitHub에서 내려받아 실행
 
@@ -66,6 +66,9 @@ python camera-test.pyz run galaxy.portrait-video --duration 5
 | `PRECHECK_SCREEN_OFF` | `dumpsys power`의 `mWakefulness`가 `Awake`가 아닙니다(`Asleep`, `Dozing`). |
 | `PRECHECK_LOCKED` | `dumpsys window`의 `isKeyguardShowing=true`(구형 Android는 `mShowingLockscreen=true`)입니다. |
 | `PRECHECK_LOW_STORAGE` | `df -k /sdcard`의 사용 가능 공간이 `camera_runner/preflight.py`의 `MIN_FREE_BYTES`(500 MB) 미만입니다. |
+| `PRECHECK_DEVICE_BUSY` | `--require-idle`일 때만 점검합니다. 최상단 앱(`topResumedActivity`)이 카메라도 HOME 런처도 아닙니다. |
+
+`PRECHECK_DEVICE_BUSY`는 다른 사람이 쓰는 단말에서 무인 실행이 남의 앱 위로 카메라를 띄우고 화면을 누르는 사고를 막습니다(실제로 단말에 사내 메신저가 열려 있던 적이 있습니다). 런처 패키지는 `cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME`의 마지막 줄(`패키지/액티비티`)에서 읽습니다. 최상단 앱이나 런처를 읽지 못하면 `preflight.foreground.state`가 `unknown`이며 실패로 처리하지 않습니다. 대화형 `run`은 기본으로 이 점검을 하지 않고, `run --require-idle`로 켭니다. `verify-build`는 항상 켭니다.
 
 Android 버전에 따라 해당 줄이 없으면 그 항목은 `unknown`으로 기록하고 실패로 처리하지 않습니다. `inspect`는 점검에 실패하면 화면을 탐색하지 않고 `preflight.failed`와 `scenario.reason`에 코드를 표시합니다. 같은 기기가 무선 디버깅으로 두 번 나열되어도(`ip:port`와 `adb-...._adb-tls-connect._tcp`) 하드웨어 일련번호(`ro.serialno`)가 같으면 한 대로 보고 `ip:port` 쪽을 자동 선택합니다. 일련번호가 다르면 이전처럼 `--device`가 필요합니다.
 
@@ -158,6 +161,90 @@ python camera-test.pyz media inspect runs/<run-id>/portrait-video.mp4
 
 앞의 두 값은 기기 시계와 logcat 시각(`MM-DD HH:MM:SS.mmm`, 연도 없음)의 차이입니다. 기기 시각을 읽은 뒤 탭이 전달되기까지의 ADB 왕복 시간이 포함되므로, 빌드끼리 비교할 때는 같은 연결 방식에서 측정합니다. 두 시각을 같은 해로 해석하므로 해를 넘기는 구간처럼 뒤 시각이 앞서면 값을 생략합니다.
 
+## 새 앱 빌드 자동 검증(verify-build)
+
+사내 카메라 앱 빌드는 자주 바뀝니다. `verify-build`는 설치된 빌드를 여러 번 반복 실행해 집계하고, 사람이 바로 판단할 수 있는 결정을 내립니다. 통과하면 **프로필과 골든 제안**을, 실패하면 **분류된 실패 보고**를 만듭니다. 사람이 승인하며, 도구는 코드와 내장 프로필을 수정하지 않습니다.
+
+```powershell
+python camera-test.pyz verify-build galaxy.portrait-video --repeat 5 --golden golden/17.0.00.43 --state-file runs/verify-state.json
+```
+
+| 옵션 | 설명 |
+|---|---|
+| `--repeat N` | 반복 횟수(1~50, 기본 5). |
+| `--duration` | 녹화 초(기본 5). |
+| `--profile-file` | 내장 대신 검증할 프로필 JSON. 제안은 이 프로필에서 만듭니다. |
+| `--golden DIR` | 골든 화면 폴더. 반복마다 `drift`를 집계합니다. |
+| `--output-dir` | 배치 폴더의 상위 폴더(기본 `runs/verify`). |
+| `--state-file PATH` | 단말(하드웨어 일련번호)과 시나리오별 마지막 배치를 기록하는 JSON입니다. 임시 파일에 쓴 뒤 교체합니다. |
+| `--if-changed` | `--state-file`에 같은 앱 버전의 기록이 있으면 UI를 건드리지 않고 `{"status": "unchanged"}`를 출력하고 종료 코드 `0`으로 끝납니다. |
+| `--baseline REPORT_JSON` | 이전 `report.json`과 지표 중앙값을 비교합니다. |
+
+각 반복은 `run`과 같은 코드로 `--allow-unverified-version --verify-media --cleanup-video --require-idle --capture-screens`(골든이 있으면 `--golden`)를 적용해 실행하며, 실행 폴더는 배치 폴더 `<output-dir>/<batch-id>/` 안에 만들어집니다. 다음 경우에는 남은 반복을 건너뜁니다.
+
+- `failure_class`가 `environment`인 실패가 한 번이라도 나오면 중단합니다(`environment_blocked`). 잠겼거나 사용 중인 단말에서 남은 횟수를 소모하지 않습니다.
+- `automation` 실패가 연속 2회 나오면 중단합니다. 프로필이 깨졌으므로 반복해도 소용이 없습니다.
+
+### 결정(decision)과 종료 코드
+
+위에서부터 먼저 맞는 조건이 결정이 됩니다.
+
+| `decision` | 조건 | 종료 코드 |
+|---|---|---|
+| `environment_blocked` | `environment` 실패로 중단했습니다. | `3` |
+| `needs_profile_fix` | `automation` 실패가 있거나, 골든 대비 worst drift가 `breaking`입니다(전부 통과해도 해당). | `1` |
+| `product_failure` | `product` 실패가 있고 `automation` 실패는 없습니다. | `1` |
+| `promote` | 앱 버전이 프로필의 `verified_versions`에 없고, 전부 통과했고, drift가 `breaking`이 아닙니다. | `0` |
+| `baseline_ok` | 이미 검증된 버전이고 전부 통과했습니다. 불안정성과 지표의 기준으로 씁니다. | `0` |
+| `flaky` | 위 어디에도 맞지 않는 통과·실패 혼합입니다(분류표에 없는 오류 코드 등). | `1` |
+
+`--if-changed`가 건너뛴 경우(`unchanged`)의 종료 코드는 `0`입니다. 종료 코드 `2`는 `run`의 "기능 판정 근거 없음"이 쓰고 있어 `verify-build`는 환경 문제에 `3`을 씁니다. 통과와 실패가 섞였는지는 `report.json`의 `iterations.intermittent`로 따로 봅니다.
+
+### 배치 폴더의 파일
+
+| 파일 | 내용 |
+|---|---|
+| `report.json` | 집계 결과입니다. 앱 버전과 `verified`, 반복 수(`requested`, `run`, `passed`, `pass_rate`), `failure_classes`, `error_codes`, `ui_retries` 합계, 지표별 `min`/`median`/`max`(통과한 실행만 사용: `record_start_latency_ms`, `record_stop_latency_ms`, `video_ready_ms`), 영상 요약(코덱, 해상도, fps 소수 첫째 자리, 오디오 유무, 길이 최소·최대), `drift`(최악 등급, `profile_selectors_missing`·`changed_labels`의 합집합), `warnings`, 실행별 `run_id`와 `result.json` 경로, `decision`을 담습니다. |
+| `report.md` | 결정, 숫자, 사람이 실행할 다음 명령을 한국어로 정리합니다. |
+| `proposal/profile.json` | `promote`일 때만 만듭니다. 사용한 프로필에 새 버전을 `verified_versions`에 추가한 것이며 프로필 로더로 검증합니다. |
+| `proposal/golden/` | `promote`일 때만, 화면을 저장한 첫 통과 실행에서 승격합니다. |
+| `<run-id>/` | 반복마다의 `result.json`, `logcat.txt`, `screens/`, 실패 증거입니다. |
+
+`--baseline`을 주면 `report["baseline"]`에 지표별 이전 중앙값, 변화량, `regression`을 기록합니다. 중앙값이 25%를 넘고 100 ms를 넘게 늘면(`camera_runner/verify.py`의 `REGRESSION_RATIO`, `REGRESSION_MIN_MS`) 악화로 보고 `warnings`에 `METRIC_REGRESSION`을 추가합니다. 결정은 바뀌지 않습니다.
+
+### 제안 승인 절차(`promote`)
+
+1. `report.md`와 `report.json`의 통과율, 지표, 영상 요약을 확인합니다.
+2. 제안 프로필을 검사하고 실기기에서 다시 확인합니다.
+
+   ```powershell
+   python camera-test.pyz profile validate runs/verify/<batch-id>/proposal/profile.json
+   python camera-test.pyz run galaxy.portrait-video --profile-file runs/verify/<batch-id>/proposal/profile.json --golden runs/verify/<batch-id>/proposal/golden
+   ```
+
+3. 팀 전체에 반영하려면 `camera_runner/scenarios/galaxy_portrait_video.py`의 `PROFILE`(`verified_versions`와 바뀐 값)에 옮기고 `python build.py camera-test.pyz`로 다시 빌드해 커밋합니다. 골든은 `golden/<앱 버전>`처럼 보관합니다.
+
+`needs_profile_fix`이면 `report.md`가 가리키는 첫 실패 실행의 `diagnosis`와 `drift.profile_selectors_missing`에서 시작해 [앱 빌드 대응](#새-카메라-앱-빌드-대응) 절차로 프로필을 고치고, `--profile-file`로 `verify-build`를 다시 실행합니다.
+
+### 상태 파일과 재시도
+
+상태 파일은 `{"devices": {"<ro.serialno>": {"<시나리오>": {"app_version", "decision", "report", "finished"}}}}` 형식이며, `unchanged`가 아닌 모든 배치(실패 포함) 뒤에 갱신합니다. 같은 깨진 빌드를 매시간 반복하지 않기 위해서입니다. 단, `environment_blocked`는 빌드에 대해 아무것도 확인하지 못했으므로 기록은 남기되 `--if-changed`가 건너뛰지 않고 다음 호출에서 다시 시도합니다. 프로필을 고쳤거나 같은 빌드를 다시 검증하려면 `--if-changed` 없이 실행합니다.
+
+### 매시간 자동 실행(Windows 작업 스케줄러)
+
+> **주의** 이 작업은 실행할 때마다 단말 화면을 누르고 녹화합니다. 사람이 쓰는 단말이 아니라 **전용 랩 단말**에만 등록하세요. 사용 중인 앱을 감지하면(`PRECHECK_DEVICE_BUSY`) 중단하지만, 감지가 모든 상황을 막지는 못합니다. 단말은 ADB로 연결하고 화면 잠금을 없애거나 켜 둔 상태로 둡니다.
+
+저장소 루트에서 한 번 등록합니다(`<repo>`, `<path>`, `<dir>`은 실제 경로로 바꿉니다). 이 저장소는 작업을 등록하지 않습니다.
+
+```powershell
+schtasks /Create /TN "CameraTest\VerifyBuild" /SC HOURLY /ST 00:05 /F `
+  /TR "cmd /c cd /d <repo> && python <repo>\camera-test.pyz verify-build galaxy.portrait-video --if-changed --state-file <path>\verify-state.json --golden <dir>"
+schtasks /Query /TN "CameraTest\VerifyBuild"
+schtasks /Delete /TN "CameraTest\VerifyBuild" /F
+```
+
+앱 버전이 바뀌지 않았으면 단말 UI를 건드리지 않고 바로 끝납니다. 종료 코드(`0`/`1`/`3`)와 `report.md`로 결과를 확인합니다.
+
 ## Qualcomm과 Exynos의 HAL 검사 등록
 
 `hal begin`과 `hal collect`로 기능 OFF·ON 각각의 로그를 저장하고, `hal compare`로 태그별 차이 또는 적용 패턴을 확인합니다. `hal compare`는 저장된 `threadtime` 로그만 사용합니다. [ON/OFF 로그 수집 및 검사 작성 절차](docs/exynos-hal-validation.md)
@@ -173,7 +260,7 @@ python camera_test.py run galaxy.portrait-video --check my-feature --checks-file
 
 | `run` 종료 코드 | 의미 |
 |---|---|
-| `0` | 요청한 검증이 모두 통과했습니다. |
+| `0` | 요청한 검증이 모두 통과했습니다. (`verify-build`의 종료 코드는 위 표를 따릅니다: `0`, `1`, 환경 문제 `3`.) |
 | `1` | 시나리오 또는 증거 수집 중 오류가 발생했습니다. |
 | `2` | 시나리오는 통과했고 요청한 기능의 판정 근거가 없습니다. 잘못된 CLI 인자에도 `2`가 반환되며 이 경우 표준 오류에 사용법이 표시됩니다. |
 
@@ -203,4 +290,5 @@ python camera-test.pyz inspect --pretty
 - `camera_runner/scenarios/`는 앱별 촬영과 판정을 담당합니다. 이 폴더의 등록 목록을 `list`, `inspect`, `run`이 함께 사용합니다. 새 시나리오는 구현을 추가하고 `camera_runner/scenarios/__init__.py`에 등록합니다.
 - `camera_runner/preflight.py`, `camera_runner/failures.py`, `camera_runner/screens.py`는 각각 실행 전 환경 점검, 실패 분류표, 화면 스냅샷·골든 비교를 담당합니다.
 - `camera_runner/media.py`는 MP4 박스 파서와 영상 판정을, `camera_runner/logcat.py`는 logcat 정규식과 시각 계산을 담당합니다.
+- `camera_runner/verify.py`는 `verify-build`의 반복 실행, 집계, 결정, 제안 생성, 상태 파일을 담당합니다. 실행 한 번은 `cli.py`의 `run_once`를 그대로 재사용합니다.
 - `camera_runner/checks.py`와 `camera_runner/hal.py`는 각각 검사 정의와 HAL 로그 수집·비교를 담당합니다.

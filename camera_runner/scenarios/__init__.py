@@ -57,3 +57,13 @@ def active_profiles(path):
         override = read_profile_file(path)
         profiles[override.scenario] = override
     return profiles
+
+
+def resolve_profile(name, path):
+    """The profile a run of scenario `name` uses: the built-in one, or the profile file when given."""
+    if path is None:
+        return SCENARIOS[name].profile
+    profile = read_profile_file(path)
+    if profile.scenario != name:
+        raise RunError("INVALID_PROFILE_FILE", f"Profile is for {profile.scenario}, not {name}.")
+    return profile

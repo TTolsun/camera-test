@@ -9,16 +9,16 @@ import sys
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
-from . import media, preflight, screens
+from . import media, preflight, screens, verify
 from .checks import load_checks, resolve_check
 from .failures import failure_class
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
 from .logcat import LOG_LINE
 from .profiles import record_state_stats, selector_report
-from .scenarios import SCENARIOS, active_profiles, read_profile_file
+from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
@@ -194,11 +194,7 @@ def finish_screens(profile, golden, output, saved, result):
 
 def run(args, checks, result, output):
     scenario = SCENARIOS[args.scenario]
-    profile = scenario.profile
-    if args.profile_file:
-        profile = read_profile_file(args.profile_file)
-        if profile.scenario != args.scenario:
-            raise RunError("INVALID_PROFILE_FILE", f"Profile is for {profile.scenario}, not {args.scenario}.")
+    profile = resolve_profile(args.scenario, args.profile_file)
     golden = screens.load_golden(args.golden, args.scenario)[1] if args.golden else None
     selected = select_device(args.device)
     device = Device(selected, result["run_id"])
@@ -223,7 +219,7 @@ def run(args, checks, result, output):
         check, reason = resolve_check(checks, args.check, result["device"]["soc_vendor"])
         if args.check:
             result["feature"]["reason"] = reason
-        result["preflight"] = preflight.check(device)
+        result["preflight"] = preflight.check(device, profile.package if args.require_idle else None)
         since = device.clock()
         tags = dict.fromkeys(profile.log_tags)
         if check:
@@ -287,6 +283,39 @@ def read_checks(path):
         return load_checks(path)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, re.error) as exc:
         raise RunError("INVALID_CHECKS_FILE", f"Check definition could not be read: {exc}") from exc
+
+
+def run_once(args):
+    """Run one scenario in-process and save result.json. Returns (result, exit_code) without printing."""
+    run_id = uuid4().hex[:12]
+    output = args.output_dir.resolve() / run_id
+    result = {"tool_version": VERSION, "run_id": run_id, "scenario": args.scenario, "scenario_status": "FAIL",
+              "requested_seconds": args.duration, "steps": [], "artifacts": {}}
+    if args.check:
+        result["feature"] = {"name": args.check, "status": "UNVERIFIED", "reason": "CHECK_NOT_REGISTERED"}
+    try:
+        output.mkdir(parents=True)
+        run(args, read_checks(args.checks_file), result, output)
+    except RunError as exc:
+        result["error"] = {"code": exc.code, "message": str(exc)}
+    except OSError as exc:
+        result["error"] = {"code": "IO_ERROR", "message": str(exc)[:240]}
+    except KeyboardInterrupt:
+        result["error"] = {"code": "INTERRUPTED", "message": "Camera test was interrupted."}
+
+    classify(result)
+    if output.is_dir():
+        path = output / "result.json"
+        result["artifacts"]["result"] = str(path)
+        try:
+            path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            result["artifacts"].pop("result")
+            result["error"] = {"code": "RESULT_WRITE_FAILED", "message": "Could not save result.json."}
+            classify(result)
+    if "error" in result or "log_capture_error" in result or result["scenario_status"] != "PASS":
+        return result, 1
+    return result, 2 if args.check and result["feature"]["status"] != "PASS" else 0
 
 
 def run_hal(args):
@@ -417,6 +446,20 @@ def main():
                          help="After verification, delete the exact MP4 this run created from the device.")
     command.add_argument("--allow-unverified-version", action="store_true",
                          help="Run even when the app version is not in the profile's verified_versions.")
+    command.add_argument("--require-idle", action="store_true",
+                         help="Stop with PRECHECK_DEVICE_BUSY when an app other than the camera or the launcher is in the foreground.")
+    verify_cmd = commands.add_parser("verify-build", help="Repeat a scenario on the installed app build and decide what a human must do.")
+    verify_cmd.add_argument("scenario", choices=tuple(SCENARIOS))
+    verify_cmd.add_argument("--device", help="ADB serial. Optional when exactly one physical device is ready.")
+    verify_cmd.add_argument("--repeat", type=int, choices=range(1, 51), metavar="N", default=5, help="Iterations (1-50).")
+    verify_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5)
+    verify_cmd.add_argument("--profile-file", type=Path, help="App profile JSON to verify instead of the built-in one.")
+    verify_cmd.add_argument("--golden", type=Path, help="Golden set folder for drift reports.")
+    verify_cmd.add_argument("--output-dir", type=Path, default=Path("runs/verify"))
+    verify_cmd.add_argument("--state-file", type=Path, help="JSON file that remembers the last batch per phone and scenario.")
+    verify_cmd.add_argument("--if-changed", action="store_true",
+                            help="Do nothing when --state-file shows this app version was already handled on this phone.")
+    verify_cmd.add_argument("--baseline", type=Path, help="Earlier report.json to compare metric medians with.")
     args = parser.parse_args()
     if args.command == "list":
         print(json.dumps(list(SCENARIOS)))
@@ -458,36 +501,19 @@ def main():
             sys.stdout.reconfigure(encoding="utf-8")
         print(json.dumps(result, ensure_ascii=not args.pretty, indent=2 if args.pretty else None))
         return exit_code
+    if args.command == "verify-build":
+        if args.if_changed and not args.state_file:
+            parser.error("--if-changed requires --state-file")
+        try:
+            result, exit_code = verify.verify_build(args, run_once, VERSION)
+        except (RunError, OSError) as exc:
+            result = {"error": {"code": getattr(exc, "code", "IO_ERROR"), "message": str(exc)[:240]}}
+            exit_code = 1
+        print(json.dumps(result, ensure_ascii=False))
+        return exit_code
     if args.checks_file and not args.check:
         parser.error("--checks-file requires --check")
 
-    run_id = uuid4().hex[:12]
-    output = args.output_dir.resolve() / run_id
-    result = {"tool_version": VERSION, "run_id": run_id, "scenario": args.scenario, "scenario_status": "FAIL",
-              "requested_seconds": args.duration, "steps": [], "artifacts": {}}
-    if args.check:
-        result["feature"] = {"name": args.check, "status": "UNVERIFIED", "reason": "CHECK_NOT_REGISTERED"}
-    try:
-        output.mkdir(parents=True)
-        run(args, read_checks(args.checks_file), result, output)
-    except RunError as exc:
-        result["error"] = {"code": exc.code, "message": str(exc)}
-    except OSError as exc:
-        result["error"] = {"code": "IO_ERROR", "message": str(exc)[:240]}
-    except KeyboardInterrupt:
-        result["error"] = {"code": "INTERRUPTED", "message": "Camera test was interrupted."}
-
-    classify(result)
-    if output.is_dir():
-        path = output / "result.json"
-        result["artifacts"]["result"] = str(path)
-        try:
-            path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except OSError:
-            result["artifacts"].pop("result")
-            result["error"] = {"code": "RESULT_WRITE_FAILED", "message": "Could not save result.json."}
-            classify(result)
+    result, exit_code = run_once(args)
     print(json.dumps(result))
-    if "error" in result or "log_capture_error" in result or result["scenario_status"] != "PASS":
-        return 1
-    return 2 if args.check and result["feature"]["status"] != "PASS" else 0
+    return exit_code

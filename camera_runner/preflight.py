@@ -38,9 +38,31 @@ def free_bytes(device):
     return int(found[3]) * 1024 if found else None
 
 
-def measure(device):
-    return {"screen": screen_state(device), "lock": lock_state(device),
-            "free_bytes": free_bytes(device), "min_free_bytes": MIN_FREE_BYTES}
+def foreground_state(device, camera_package):
+    """Who owns the screen: the camera or the HOME launcher is `idle`; any other app is `busy`.
+
+    The launcher is resolved only when another app is on top. If the top activity or the
+    launcher cannot be read, the state is `unknown` and never fails the run.
+    """
+    top = device.top_package()
+    launcher = None
+    if top is None:
+        state = "unknown"
+    elif top == camera_package:
+        state = "idle"
+    else:
+        launcher = device.launcher_package()
+        state = "unknown" if launcher is None else "idle" if top == launcher else "busy"
+    return {"package": top, "launcher": launcher, "state": state}
+
+
+def measure(device, idle_package=None):
+    """`idle_package` (the camera package) additionally measures whether another app is in the foreground."""
+    measured = {"screen": screen_state(device), "lock": lock_state(device),
+                "free_bytes": free_bytes(device), "min_free_bytes": MIN_FREE_BYTES}
+    if idle_package is not None:
+        measured["foreground"] = foreground_state(device, idle_package)
+    return measured
 
 
 def verdict(measured):
@@ -53,12 +75,16 @@ def verdict(measured):
     if free is not None and free < measured["min_free_bytes"]:
         return "PRECHECK_LOW_STORAGE", (f"Only {free // 1048576} MB is free on {STORAGE_PATH}; "
                                         f"at least {measured['min_free_bytes'] // 1048576} MB is required.")
+    foreground = measured.get("foreground", {})
+    if foreground.get("state") == "busy":
+        return "PRECHECK_DEVICE_BUSY", (f"{foreground['package']} is in the foreground, not the camera or the launcher. "
+                                        "Another person may be using the phone.")
     return None
 
 
-def check(device):
+def check(device, idle_package=None):
     """Measure the device and raise RunError when the environment is not usable."""
-    measured = measure(device)
+    measured = measure(device, idle_package)
     if failed := verdict(measured):
         raise RunError(*failed)
     return measured

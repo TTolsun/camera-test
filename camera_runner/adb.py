@@ -138,9 +138,28 @@ class Device:
         x, y = point
         self.shell("input", "tap", str(x), str(y))
 
-    def package_foreground(self, package):
+    def top_package(self):
+        """Package of the top resumed activity, or None when `dumpsys activity` does not show one."""
         activities = self.shell("dumpsys", "activity", "activities")
-        return bool(re.search(rf"topResumedActivity=[^\n]*\s{re.escape(package)}/", activities))
+        # Newer Android prints `topResumedActivity=`; `ResumedActivity:` is the fallback (older versions, or a dozing screen).
+        for marker in (r"topResumedActivity=", r"ResumedActivity:"):
+            if found := re.search(marker + r"[^\n]*?\s([\w.]+)/", activities):
+                return found[1]
+        return None
+
+    def launcher_package(self):
+        """Package of the default HOME launcher, or None when it cannot be resolved."""
+        try:
+            text = self.shell("cmd", "package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN",
+                              "-c", "android.intent.category.HOME")
+        except RunError:
+            return None
+        found = re.fullmatch(r"([\w.]+)/\S+", (text.splitlines() or [""])[-1].strip())
+        # "android" is the system resolver dialog, which means no default launcher is set.
+        return found[1] if found and found[1] != "android" else None
+
+    def package_foreground(self, package):
+        return self.top_package() == package
 
     def screenshot(self):
         return adb("-s", self.serial, "exec-out", "screencap", "-p", binary=True)

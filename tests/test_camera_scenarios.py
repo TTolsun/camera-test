@@ -18,6 +18,8 @@ from tests.mp4_builder import audio_track, mp4, video_track
 
 GALAXY_SCENARIO = "galaxy.portrait-video"
 GALAXY_PACKAGE = "com.sec.android.app.camera"
+LAUNCHER_PACKAGE = "com.sec.android.app.launcher"
+OWNER_APP = "com.sds.mchat"
 VIDEO_PATH = "/sdcard/DCIM/Camera/mock.mp4"
 STARTED = "11-21 09:10:02.350 1234 1234 I RecordingManager: changeRecordingState : STARTING -> RECORDING"
 STOPPED = "11-21 09:10:03.900 1234 1234 I RecordingManager: changeRecordingState : STOPPING -> IDLE"
@@ -45,6 +47,12 @@ class MockCameraAdb:
         self.ui_failures = 0  # Portrait Video dumps that fail before one succeeds.
         self.video_bytes = b"mock"  # Content of the pulled MP4; its length is also the device file size.
         self.events = []  # Order of device-file operations that matter to --cleanup-video.
+        self.top = LAUNCHER_PACKAGE  # Top resumed activity package; launching the camera replaces it.
+        self.launcher_output = f"priority=0 preferredOrder=0 match=0x108000\n{LAUNCHER_PACKAGE}/.LauncherActivity"
+        self.video_plan = []  # MP4 bytes for the next recordings, consumed in order as each recording stops.
+        self.files = []  # MP4s on the device: the first recording is VIDEO_PATH, later ones get their own names.
+        self.recordings = 0
+        self.commands = []  # Every shell command, to prove what a short-circuited command did not touch.
 
     def hierarchy(self):
         if self.mode == "portrait":
@@ -68,12 +76,13 @@ class MockCameraAdb:
         if args[2] == "exec-out":
             return b""
         if args[2] == "pull":
-            assert args[3] == VIDEO_PATH and kwargs["timeout"] == 60
+            assert args[3] in self.files and kwargs["timeout"] == 60
             Path(args[4]).write_bytes(self.video_bytes)
             self.events.append("pull")
             return ""
         assert args[2] == "shell", args
         remote = shlex.split(args[3])
+        self.commands.append(remote)
         if remote == ["getprop", "ro.serialno"]:
             return "mock-hardware"
         if remote == ["getprop"]:
@@ -82,15 +91,26 @@ class MockCameraAdb:
             version = self.versions.get(remote[2])
             return f"    versionName={version}" if version else ""
         if remote == ["dumpsys", "activity", "activities"]:
-            return f"topResumedActivity=ActivityRecord{{1 u0 {GALAXY_PACKAGE}/.Camera}}"
+            return f"    topResumedActivity=ActivityRecord{{1 u0 {self.top}/.Main t7}}"
+        if remote[:3] == ["cmd", "package", "resolve-activity"]:
+            assert remote[3:] == ["--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]
+            return self.launcher_output
         if remote[:2] == ["am", "start"]:
             assert remote[-1] == f"{GALAXY_PACKAGE}/.Camera"
+            self.clocks = 1  # Each run reads its first clock before it launches the camera.
+            if self.launch_status == "Status: ok":
+                self.top = GALAXY_PACKAGE
             return self.launch_status
         if remote[:2] == ["input", "tap"]:
             point = tuple(remote[2:])
             self.taps.append(point)
             if point == ("5", "5"):
                 self.record_taps += 1
+                if self.record_taps % 2 == 0:
+                    self.files.append(VIDEO_PATH if not self.recordings else f"/sdcard/DCIM/Camera/mock{self.recordings}.mp4")
+                    self.recordings += 1
+                    if self.video_plan:
+                        self.video_bytes = self.video_plan.pop(0)
             else:
                 self.mode = {("15", "15"): "more", ("25", "25"): "photo", ("35", "35"): "portrait"}[point]
             return ""
@@ -105,7 +125,7 @@ class MockCameraAdb:
             if self.record_log is not None:
                 return self.record_log
             return STOPPED if remote[3] == "11-21 09:10:03.100" else STARTED
-        if remote == ["stat", "-c", "%s", VIDEO_PATH]:
+        if remote[:3] == ["stat", "-c", "%s"] and remote[3] in self.files:
             return str(len(self.video_bytes))
         if remote[0] == "df":
             assert remote[1:] == ["-k", "/sdcard"]
@@ -120,6 +140,7 @@ class MockCameraAdb:
                 if self.rm_fails:
                     raise adb.RunError("ADB_ERROR", "rm failed")
                 self.deleted.append(shlex.split(remote[2])[1])
+                self.files.remove(self.deleted[-1])
                 self.events.append("rm")
                 return "deleted"
             if remote[2].startswith("uiautomator dump "):
@@ -130,7 +151,7 @@ class MockCameraAdb:
             if remote[2].startswith("dumpsys media.camera | "):
                 return "Number of camera devices: 1"
             if "find /sdcard/DCIM/Camera" in remote[2]:
-                return VIDEO_PATH if self.record_taps == 2 else ""
+                return "\n".join(self.files)
         raise AssertionError(remote)
 
 
