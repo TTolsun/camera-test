@@ -403,7 +403,7 @@ def main():
         sys.stdout.reconfigure(errors="replace")  # --help and guidance never crash on a narrow console encoding.
     parser = argparse.ArgumentParser(
         description="Run repeatable camera scenarios on an ADB device. "
-                    "처음이면 `doctor`로 환경을 점검하세요: python camera-test.pyz doctor",
+                    "New here? Check the setup first: python camera-test.pyz doctor",
         **examples("doctor", "inspect --pretty", "run galaxy.portrait-video --duration 5 --verify-media --cleanup-video"))
     parser.add_argument("--version", action="version", version=VERSION)
     commands = parser.add_subparsers(dest="command", required=True)

@@ -236,5 +236,7 @@ def render_text(result):
         lines.append("결과: run을 실행할 준비가 되었습니다.")
     else:
         lines.append("결과: 아직 run이 동작하지 않을 것으로 예상합니다.")
-    lines.append(f"다음: {result['next_action']}")
+    # A failing check already printed its guidance under "->"; repeating it adds nothing.
+    if result["next_action"] not in {item.get("next_action") for item in result["checks"]}:
+        lines.append(f"다음: {result['next_action']}")
     return "\n".join(lines)
