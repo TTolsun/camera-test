@@ -20,10 +20,11 @@ python build.py camera-test.pyz                          # 배포용 단일 실�
 
 ## 아키텍처
 
-CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `hal {begin,collect,compare}` 하위 명령을 제공하고, 결과를 JSON으로 stdout에 출력한다. 오류는 `RunError(code, message)`로 올라와 JSON의 오류 코드가 된다.
+CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `profile {show,validate}`, `hal {begin,collect,compare}` 하위 명령을 제공하고, 결과를 JSON으로 stdout에 출력한다. 오류는 `RunError(code, message)`로 올라와 JSON의 오류 코드가 된다.
 
 - **ADB 전송 계층** (`adb.py`): 모든 기기 통신은 모듈 함수 `adb.adb(*args)` 하나를 거친다. `Device`는 그 위에서 shell, UI 덤프, logcat, pull을 제공한다. `device_lock`은 임시 디렉터리 파일 잠금으로 같은 기기에 대한 동시 실행을 막는다(`DEVICE_BUSY`).
-- **시나리오 레지스트리** (`scenarios/__init__.py`): `SCENARIOS` dict 하나를 `list`, `inspect`, `run`이 공유한다. 시나리오는 `scan(device)`(모드 탐색)과 `execute(device, seconds, result)`(녹화 후 녹화 시작 시각 반환)를 제공한다. `run`은 앱 버전이 `supported_version`과 정확히 일치하지 않으면 조작 전에 중단한다.
+- **시나리오 레지스트리** (`scenarios/__init__.py`): `SCENARIOS` dict 하나를 `list`, `inspect`, `run`이 공유한다. 시나리오는 `scan(device, profile)`(모드 탐색)과 `execute(device, profile, seconds, result)`(녹화 후 녹화 시작 시각 반환)를 제공한다.
+- **앱 프로필** (`profiles.py`): 시나리오가 의존하는 리소스 ID, UI 문구, 녹화 상태 로그 정규식, `verified_versions`를 데이터로 둔다. 내장 프로필은 시나리오 모듈의 `PROFILE` dict이고, `--profile-file`이 같은 키 집합을 가진 JSON으로 대체한다(키 불일치는 거부). `run`은 앱 버전이 `verified_versions`에 없으면 `--allow-unverified-version` 없이는 조작 전에 중단한다. 실패하면 마지막 UI 덤프(`Device.last_ui`)와 프로필을 비교한 `diagnosis`를 결과에 넣는다.
 - **기능 검사** (`checks.py`): `--checks-file` JSON(`schema_version: 1`)을 읽는다. `source: hal`은 `vendor`(`exynos`/`qualcomm`)가 필수이고, `source: app`은 `vendor`가 없어야 한다. 같은 이름에 vendor별 정의를 둘 수 있고, 감지된 SoC로 하나를 고른다. 판정은 녹화 시작 시각 이후 해당 태그 로그에 정규식이 매칭되는지로 한다.
 - **HAL 시험** (`hal.py`): `begin`이 기기 시각을 기록한 trial JSON을 만들고, `collect`가 그 이후 logcat을 저장한다. `compare`는 저장된 `threadtime` 로그만 읽으므로 ADB 없이 동작한다.
 - **logcat 형식** (`logcat.py`): 태그·시각·`threadtime` 줄 정규식을 수집, 비교, 검사가 공유한다.

@@ -24,7 +24,37 @@ python camera-test.pyz run galaxy.portrait-video --duration 5
 
 시나리오는 인물 동영상 모드로 이동하고, 카메라 앱의 녹화 상태 로그를 확인한 뒤 요청한 시간만큼 녹화합니다. 종료 로그와 `DCIM/Camera`에 생성된 새 MP4의 저장을 확인합니다. 실행 결과는 JSON 한 줄로 반환되며, `runs/<run-id>/`에 `result.json`과 선택한 태그의 `logcat.txt`를 저장합니다. 카메라 화면에서 실패하면 캡처를 시도합니다. `--pull-video`를 추가하면 새 영상도 PC로 복사합니다.
 
-카메라 앱 프로필은 `SM-S936N`, Android 17, Qualcomm `SM8750`, 갤럭시 카메라 `17.0.00.43`의 한국어 환경에서 검증했습니다. 다른 카메라 앱 버전에서는 조작 전에 중단합니다. Exynos 실기기 검증에는 팀에서 사용하는 앱 빌드와 Camera HAL 로그 정의가 필요합니다.
+내장 앱 프로필은 `SM-S936N`, Android 17, Qualcomm `SM8750`, 갤럭시 카메라 `17.0.00.43`의 한국어 환경에서 검증했습니다. 프로필의 `verified_versions`에 없는 앱 버전에서는 조작 전에 중단합니다. Exynos 실기기 검증에는 팀에서 사용하는 앱 빌드와 Camera HAL 로그 정의가 필요합니다.
+
+## 새 카메라 앱 빌드 대응
+
+시나리오가 의존하는 리소스 ID, UI 문구, 녹화 상태 로그는 코드가 아니라 앱 프로필(JSON)에 있습니다. 앱 빌드가 바뀌어도 대부분은 코드를 수정하거나 `camera-test.pyz`를 다시 빌드하지 않고 프로필 파일만 고쳐서 대응할 수 있습니다.
+
+1. 새 버전에서 그대로 동작하는지 먼저 확인합니다. 판정은 녹화 상태 로그와 새 MP4 저장에 근거하므로, 선택자가 틀리면 PASS가 아니라 오류로 끝납니다.
+
+   ```powershell
+   python camera-test.pyz run galaxy.portrait-video --allow-unverified-version
+   ```
+
+2. 통과하면 내장 프로필을 파일로 내보내고, `verified_versions`에 새 버전을 추가합니다. PowerShell의 `>` 리디렉션 대신 `--output`을 사용합니다.
+
+   ```powershell
+   python camera-test.pyz profile show galaxy.portrait-video --output galaxy-camera.json
+   ```
+
+3. 실패하면 결과 JSON의 `diagnosis`를 확인합니다.
+   - `diagnosis.ui.absent`: 마지막 화면에서 찾지 못한 선택자와, 이름이 비슷한 리소스 ID 후보(`similar`)입니다. 화면 전체는 `artifacts.failure_ui`에 저장됩니다.
+   - `diagnosis.record_state_log`: `lines`가 0보다 크고 `matched`가 0이면 녹화 상태 로그의 문구가 바뀐 것이므로 `log.record_state.pattern`을 고칩니다.
+4. 프로필을 고친 뒤 ADB 없이 형식을 검사하고, 실기기에서 다시 실행합니다. 알 수 없는 키나 오타가 있는 선택자 이름은 검사 단계에서 거부됩니다.
+
+   ```powershell
+   python camera-test.pyz profile validate galaxy-camera.json
+   python camera-test.pyz run galaxy.portrait-video --profile-file galaxy-camera.json
+   ```
+
+5. 팀 전체에 반영하려면 수정한 값을 `camera_runner/scenarios/galaxy_portrait_video.py`의 `PROFILE`에 옮기고 `camera-test.pyz`를 다시 빌드합니다.
+
+`inspect`의 `scenario.status`가 `unverified`이면 현재 프로필의 선택자로 모드는 찾았지만 앱 버전이 검증 목록에 없다는 뜻입니다. `--allow-unverified-version`으로 실행한 결과에는 `warnings: ["UNVERIFIED_CAMERA_VERSION"]`이 붙습니다.
 
 ## Qualcomm과 Exynos의 HAL 검사 등록
 

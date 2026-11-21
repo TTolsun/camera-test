@@ -96,6 +96,7 @@ class Device:
     def __init__(self, serial, run_id):
         self.serial = serial
         self.dump_path = f"/data/local/tmp/camera-test-{run_id}.xml"
+        self.last_ui = None  # Raw XML of the latest UI dump, kept for failure diagnosis.
 
     def shell(self, *args, timeout=12):
         return adb("-s", self.serial, "shell", shlex.join(args), timeout=timeout).strip()
@@ -105,9 +106,11 @@ class Device:
         script = f"uiautomator dump {path} >/dev/null && cat {path}; rm -f {path}"
         data = self.shell("sh", "-c", script, timeout=14)
         try:
-            return ElementTree.fromstring(data)
+            root = ElementTree.fromstring(data)
         except ElementTree.ParseError as exc:
             raise RunError("UI_UNAVAILABLE", "Camera UI hierarchy is unavailable. Check unlock state or active recording.") from exc
+        self.last_ui = data
+        return root
 
     def tap(self, point):
         x, y = point

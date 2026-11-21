@@ -1,6 +1,7 @@
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+from itertools import count
 from pathlib import Path
 import shlex
 import sys
@@ -10,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import camera_test
 from camera_runner import adb
+from camera_runner.profiles import parse_profile
 from camera_runner.scenarios import SCENARIOS, Scenario, galaxy_portrait_video
 
 
@@ -31,6 +33,7 @@ class MockCameraAdb:
         self.taps = []
         self.clocks = 0
         self.record_taps = 0
+        self.renamed_ids = {}
 
     def hierarchy(self):
         if self.mode == "portrait":
@@ -43,12 +46,16 @@ class MockCameraAdb:
             nodes += node("shooting_mode_item_button", 'text="Photo" bounds="[20,20][30,30]"')
             if self.mode == "more":
                 nodes += node("more_grid_list_text", 'text="Portrait Video" bounds="[30,30][40,40]"')
+        for old, new in self.renamed_ids.items():
+            nodes = nodes.replace(f'id/{old}"', f'id/{new}"')
         return f"<hierarchy>{nodes}</hierarchy>"
 
     def __call__(self, *args, **kwargs):
         if args == ("devices",):
             return "List of devices attached\nmock-phone\tdevice\n"
         assert args[:2] == ("-s", "mock-phone"), args
+        if args[2] == "exec-out":
+            return b""
         if args[2] == "pull":
             assert args[3] == VIDEO_PATH and kwargs["timeout"] == 60
             Path(args[4]).write_bytes(b"mock")
@@ -115,23 +122,97 @@ class ScenarioCliTests(unittest.TestCase):
 
         code, result = self.cli("inspect")
         self.assertEqual(code, 0)
-        self.assertEqual(result["scenario"], {"name": GALAXY_SCENARIO, "status": "runnable", "reason": "MODE_OBSERVED"})
+        self.assertEqual(result["scenario"], {"name": GALAXY_SCENARIO, "status": "runnable", "reason": "MODE_OBSERVED",
+                                              "profile": {"source": "built-in", "verified_versions": ["17.0.00.43"],
+                                                          "version_verified": True}})
         self.assertNotIn("scenarios", result)
         self.assertEqual(result["device"]["camera_version"], "17.0.00.43")
         self.assertEqual(result["camera_ui"]["observed_modes"], ["Photo", "Portrait Video"])
         self.assertEqual((self.device.taps, self.device.mode), ([("15", "15"), ("25", "25")], "photo"))
 
-    def test_unverified_build_keeps_existing_error_and_does_not_start_capture(self):
-        self.device.versions[GALAXY_PACKAGE] = "0.0"
+    def test_unverified_build_stops_unless_a_verification_run_is_requested(self):
+        self.device.versions[GALAXY_PACKAGE] = "18.0.00.1"
         code, result = self.cli("inspect")
-        self.assertEqual((code, result["scenario"]["reason"]), (0, "UNSUPPORTED_CAMERA_VERSION"))
+        self.assertEqual((code, result["scenario"]["status"], result["scenario"]["reason"]),
+                         (0, "unverified", "UNSUPPORTED_CAMERA_VERSION"))
+        self.assertFalse(result["scenario"]["profile"]["version_verified"])
         self.assertIn("Portrait Video", result["camera_ui"]["observed_modes"])
 
         with TemporaryDirectory() as output:
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output)
         self.assertEqual((code, result["error"]["code"]), (1, "UNSUPPORTED_CAMERA_VERSION"))
-        self.assertEqual(result["error"]["message"], "This profile requires Galaxy Camera 17.0.00.43.")
+        self.assertEqual(result["error"]["message"],
+                         "Galaxy Camera 18.0.00.1 is not a verified version of this profile (17.0.00.43). "
+                         "Rerun with --allow-unverified-version to verify it.")
         self.assertEqual(self.device.record_taps, 0)
+
+        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--allow-unverified-version")
+        self.assertEqual((code, result["scenario_status"], result["warnings"]), (0, "PASS", ["UNVERIFIED_CAMERA_VERSION"]))
+        self.assertFalse(result["profile"]["version_verified"])
+        self.assertNotIn("diagnosis", result)
+
+    def test_missing_camera_app_is_reported_before_any_operation(self):
+        del self.device.versions[GALAXY_PACKAGE]
+        with TemporaryDirectory() as output:
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--allow-unverified-version")
+        self.assertEqual((code, result["error"]["code"], self.device.taps), (1, "CAMERA_APP_NOT_FOUND", []))
+
+    def test_selector_drift_is_diagnosed_and_fixed_with_a_profile_file(self):
+        # A new app build renames the Portrait Video marker; nothing else changes.
+        self.device.versions[GALAXY_PACKAGE] = "18.0.00.1"
+        self.device.renamed_ids = {"shooting_mode_portrait_video_main": "shooting_mode_portrait_video_main_v2"}
+        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"), \
+                patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--allow-unverified-version")
+            self.assertEqual((code, result["error"]["code"]), (1, "MODE_NOT_READY"))
+            self.assertTrue(Path(result["artifacts"]["failure_ui"]).is_file())
+        diagnosis = result["diagnosis"]
+        self.assertEqual(diagnosis["ui"]["absent"]["mode_ready"]["similar"][0], "shooting_mode_portrait_video_main_v2")
+        self.assertIn("record_button", diagnosis["ui"]["present"])
+        self.assertEqual(diagnosis["record_state_log"], {"tag": "RecordingManager", "lines": 1, "matched": 1})
+
+        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+            profile = Path(output) / "galaxy-18.json"
+            self.assertEqual(self.cli("profile", "show", GALAXY_SCENARIO, "--output", profile)[0], 0)
+            data = json.loads(profile.read_text(encoding="utf-8"))
+            data["verified_versions"].append("18.0.00.1")
+            data["selectors"]["mode_ready"] = "shooting_mode_portrait_video_main_v2"
+            # Windows PowerShell 5.1 redirection writes UTF-16; the loader must accept it.
+            profile.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-16")
+            self.assertEqual(self.cli("profile", "validate", profile),
+                             (0, {"valid": True, "scenario": GALAXY_SCENARIO, "verified_versions": ["17.0.00.43", "18.0.00.1"]}))
+
+            # Same renamed build, fresh phone state: the mock's log timeline starts over.
+            self.device = MockCameraAdb()
+            self.device.versions[GALAXY_PACKAGE] = "18.0.00.1"
+            self.device.renamed_ids = {"shooting_mode_portrait_video_main": "shooting_mode_portrait_video_main_v2"}
+            code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--profile-file", profile)
+        self.assertEqual((code, result["scenario_status"]), (0, "PASS"), result.get("error"))
+        self.assertEqual(result["profile"], {"source": str(profile), "verified_versions": ["17.0.00.43", "18.0.00.1"],
+                                             "version_verified": True})
+        self.assertNotIn("warnings", result)
+
+    def test_profile_validation_rejects_misspelled_or_foreign_keys(self):
+        with TemporaryDirectory() as output:
+            profile = Path(output) / "profile.json"
+            data = SCENARIOS[GALAXY_SCENARIO].profile.to_dict()
+            data["selectors"]["record_buton"] = data["selectors"].pop("record_button")
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            code, result = self.cli("profile", "validate", profile)
+            self.assertEqual((code, result["valid"], result["error"]["code"]), (1, False, "INVALID_PROFILE_FILE"))
+            self.assertIn("record_buton", result["error"]["message"])
+
+            data = SCENARIOS[GALAXY_SCENARIO].profile.to_dict()
+            data["log"]["record_state"]["pattern"] = r"changeRecordingState (\w+)"
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            self.assertIn("two groups", self.cli("profile", "validate", profile)[1]["error"]["message"])
+
+            data = dict(SCENARIOS[GALAXY_SCENARIO].profile.to_dict(), scenario="other.scenario")
+            profile.write_text(json.dumps(data), encoding="utf-8")
+            with TemporaryDirectory() as runs:
+                code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", runs, "--profile-file", profile)
+            self.assertEqual((code, result["error"]["code"], self.device.taps), (1, "INVALID_PROFILE_FILE", []))
 
     def test_galaxy_run_records_video_and_checks_hal_logs(self):
         with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
@@ -154,7 +235,12 @@ class ScenarioCliTests(unittest.TestCase):
         self.device.versions["example.camera"] = "2.0"
         scanner = Mock(return_value=({"observed_modes": ["Example"]}, True))
         runner = Mock(return_value="11-21 09:10:01.100")
-        scenario = Scenario("example.camera", "Example Camera", "2.0", (), "example.mp4", scanner, runner)
+        profile = parse_profile({
+            "schema_version": 1, "scenario": name, "package": "example.camera", "activity": ".Main",
+            "verified_versions": ["2.0"], "selectors": {}, "labels": {},
+            "log": {"tags": ["ExampleCamera"], "record_state": {"tag": "ExampleCamera", "pattern": r"(\w+) -> (\w+)"}},
+        }, "built-in")
+        scenario = Scenario("Example Camera", profile, "example.mp4", scanner, runner)
 
         with patch.dict(SCENARIOS, {name: scenario}), TemporaryDirectory() as output:
             self.assertEqual(self.cli("list"), (0, [GALAXY_SCENARIO, name]))
