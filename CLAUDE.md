@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-작업별 스킬 선택은 [AGENTS.md](AGENTS.md)를 따른다. 사용자용 설명(실행 방법, 종료 코드, 검사 등록)은 [README.md](README.md)에 있다.
+작업별 스킬 선택은 [AGENTS.md](AGENTS.md)를 따른다. 사용자용 설명은 [README.md](README.md)(시작 안내)와 `docs/`(설치, 일상 검증, 새 앱 빌드 대응, 랩 자동 운영, 참조)에 있다. CLI 옵션이나 결과 필드를 바꾸면 `docs/reference.md`와 해당 가이드를 함께 고친다.
 
 ## 명령
 
