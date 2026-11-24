@@ -6,10 +6,11 @@ from pathlib import Path
 import re
 import shlex
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
-from . import doctor, media, preflight, screens, verify
+from . import doctor, media, mode, preflight, screens, suite, verify
 from .checks import load_checks, resolve_check
 from .failures import failure_class
 from .guidance import PYZ, error_object, next_action
@@ -19,7 +20,7 @@ from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
@@ -392,6 +393,27 @@ def run_profile(args):
     return exit_code
 
 
+def run_suite_command(args):
+    """Print the Korean report (or JSON). Errors before the phone is touched are printed with their next step."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+    try:
+        tools = SimpleNamespace(pull_video=pull_video, capture_failure=capture_failure)
+        result, exit_code = suite.run_suite(args, VERSION, tools)
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else suite.render(result))
+        return exit_code
+    except (RunError, OSError) as exc:
+        code = getattr(exc, "code", "IO_ERROR")
+        error = error_object(code, str(exc)[:240])
+        if args.json:
+            print(json.dumps({"error": error}, ensure_ascii=False))
+        else:
+            print(f"오류 {code}: {error['message']}\n다음: {error['next_action']}")
+        return 3 if failure_class(code) == "environment" else 1
+
+
 def examples(*lines):
     """Epilog with real commands; RawDescriptionHelpFormatter keeps the line breaks."""
     return {"formatter_class": argparse.RawDescriptionHelpFormatter,
@@ -399,12 +421,16 @@ def examples(*lines):
 
 
 def main():
+    if sys.argv[1:2] in (["suite"], ["mode"]):
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # --help and guidance never crash on a narrow console encoding.
     parser = argparse.ArgumentParser(
         description="Run repeatable camera scenarios on an ADB device. "
                     "New here? Check the setup first: python camera-test.pyz doctor",
-        **examples("doctor", "inspect --pretty", "run galaxy.portrait-video --duration 5 --verify-media --cleanup-video"))
+        **examples("doctor", "suite", "inspect --pretty", "run galaxy.portrait-video --duration 5 --verify-media --cleanup-video"))
     parser.add_argument("--version", action="version", version=VERSION)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="List runnable scenarios as JSON.")
@@ -499,7 +525,41 @@ def main():
     verify_cmd.add_argument("--if-changed", action="store_true",
                             help="Do nothing when --state-file shows this app version was already handled on this phone.")
     verify_cmd.add_argument("--baseline", type=Path, help="Earlier report.json to compare metric medians with.")
+    suite_cmd = commands.add_parser(
+        "suite", help="전·후면 카메라를 모드별로 확인하고 촬영 증거를 등록합니다.",
+        **examples("suite", "suite --device <ADB_SERIAL>", "suite --rescan", "suite --json"))
+    suite_cmd.add_argument("--device", help="ADB 일련번호입니다. 실기기가 한 대일 때는 생략합니다.")
+    suite_cmd.add_argument("--output-dir", type=Path, default=Path("runs/suite"),
+                           help="실행 폴더와 기본 등록부를 저장할 폴더입니다. 기본값은 runs/suite입니다.")
+    suite_cmd.add_argument("--registry", type=Path, help="등록부 파일 경로입니다. 기본값은 출력 폴더의 registry.json입니다.")
+    suite_cmd.add_argument("--rescan", action="store_true", help="같은 앱 버전에서도 전·후면 모드 목록을 다시 탐색합니다.")
+    suite_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5,
+                           help="각 동영상의 녹화 시간입니다. 기본값은 5초입니다.")
+    suite_cmd.add_argument("--allow-unverified-version", action="store_true", help=argparse.SUPPRESS)
+    suite_cmd.add_argument("--json", action="store_true", help="결과를 JSON으로 출력합니다.")
+    mode_cmd = commands.add_parser(
+        "mode", help="요청한 방향의 카메라 모드 하나를 실행하거나 지원 목록을 표시합니다.",
+        **examples('mode "Pro Video" --facing rear --json', "mode --list"))
+    selection = mode_cmd.add_mutually_exclusive_group(required=True)
+    selection.add_argument("name", nargs="?", help="카탈로그의 한글·영문 모드 이름 또는 ID입니다.")
+    selection.add_argument("--list", action="store_true", help="단말 연결 없이 모드 이름과 실행 유형을 표시합니다.")
+    mode_cmd.add_argument("--facing", choices=suite.FACING_NAMES, default="rear",
+                          help="사용할 카메라 방향입니다. 기본값은 rear입니다.")
+    mode_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5,
+                          help="동영상 녹화 시간입니다. 기본값은 5초입니다.")
+    mode_cmd.add_argument("--open-only", action="store_true", help="해당 방향의 모드가 열렸는지 확인합니다.")
+    mode_cmd.add_argument("--device", help="ADB 일련번호입니다. 실기기가 한 대일 때는 생략합니다.")
+    mode_cmd.add_argument("--output-dir", type=Path, default=Path("runs/mode"),
+                          help="실행 결과를 저장할 폴더입니다. 기본값은 runs/mode입니다.")
+    mode_cmd.add_argument("--json", action="store_true", help="결과를 JSON으로 출력합니다.")
     args = parser.parse_args()
+    if args.command == "suite":
+        return run_suite_command(args)
+    if args.command == "mode":
+        tools = SimpleNamespace(pull_video=pull_video, capture_failure=capture_failure)
+        result, code = mode.run_mode(args, VERSION, tools)
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else mode.render(result))
+        return code
     if args.command == "list":
         print(json.dumps(list(SCENARIOS)))
         return 0

@@ -10,7 +10,7 @@ from camera_runner import adb
 from tests.test_camera_scenarios import GALAXY_PACKAGE, GALAXY_SCENARIO, OWNER_APP, MockCameraAdb
 
 
-FIRST_COMMAND = f"python camera-test.pyz run {GALAXY_SCENARIO} --duration 5 --verify-media --cleanup-video"
+FIRST_COMMAND = 'python camera-test.pyz mode "<모드명>"'
 MDNS_HEADER = "List of discovered mdns services\n"
 
 

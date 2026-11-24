@@ -173,8 +173,12 @@ def mode_labels(root, profile, key):
     }
 
 
-def scan_modes(device, profile):
-    launch_camera(device, profile)
+def scan_modes(device, profile, launch=True, allow_partial=False):
+    """`launch=False` scans the camera that is already in the foreground, so a facing the caller set stays."""
+    if launch:
+        launch_camera(device, profile)
+    else:
+        require_foreground(device, profile)
     mode_text, more_text = profile.label_set("mode"), profile.label_set("more")
     initial = device.ui()
     root = initial
@@ -195,14 +199,20 @@ def scan_modes(device, profile):
         more = find_node(root, profile, "mode_button", more_text)
         if more is not None:
             device.tap(center(more))
-            root = device.ui()
-            strip_modes.update(mode_labels(root, profile, "mode_button"))
-            more_modes = mode_labels(root, profile, "more_grid_item")
-            opened_more = bool(more_modes)
+            try:
+                root = device.ui()
+            except RunError as exc:
+                if not allow_partial or exc.code != "UI_UNAVAILABLE":
+                    raise
+                root = None
+            if root is not None:
+                strip_modes.update(mode_labels(root, profile, "mode_button"))
+                more_modes = mode_labels(root, profile, "more_grid_item")
+                opened_more = bool(more_modes)
     if not opened_more:
         warnings.append("MORE_MENU_NOT_OBSERVED")
 
-    if initial_mode and initial_mode.casefold() not in more_text:
+    if root is not None and initial_mode and initial_mode.casefold() not in more_text:
         labels = {initial_mode.casefold()}
         restore = find_node(root, profile, "more_grid_item", labels) if title is not None else None
         if restore is None:

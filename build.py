@@ -16,6 +16,8 @@ def main():
         archive.write(root / "camera_test.py", "camera_test.py")
         for module in sorted((root / "camera_runner").rglob("*.py")):
             archive.write(module, module.relative_to(root).as_posix())
+        preview = root / "camera_runner" / "assets" / "preview.jar"
+        archive.write(preview, preview.relative_to(root).as_posix())
     print(output.resolve())
 
 

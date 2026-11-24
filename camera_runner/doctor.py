@@ -18,7 +18,7 @@ from .scenarios import SCENARIOS
 MIN_PYTHON = (3, 10)
 KNOWN_STATES = ("device", "unauthorized", "offline")
 MDNS_LINE = re.compile(r"^\s*(\S+)\s+_adb-tls-(connect|pairing)\._tcp\.?\s+(\S+)", re.M)
-FIRST_RUN = f"{PYZ} run {DEFAULT_SCENARIO} --duration 5 --verify-media --cleanup-video"
+FIRST_RUN = f'{PYZ} mode "<모드명>"'
 MARKERS = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}
 
 
@@ -218,7 +218,7 @@ def final_action(checks, ready, serial, requested):
         suffix = f" --device {serial}" if requested else ""
         busy = next((item for item in checks if item["name"] == "phone_state" and item["status"] == "warn"), None)
         prefix = "단말 앞 화면에 다른 앱이 있습니다. 쓰는 사람이 없는지 확인한 뒤 " if busy else ""
-        return f"{prefix}`{FIRST_RUN}{suffix}`를 실행합니다."
+        return f"{prefix}`{FIRST_RUN}{suffix}`의 <모드명>에 요청받은 이름을 넣어 실행합니다. 목록은 `{PYZ} mode --list`로 확인합니다."
     # A failure comes first; otherwise the warnings that keep `run` from working (several phones, unverified app).
     blocking = next(item for item in checks if item["status"] == "fail" or
                     (item["status"] == "warn" and item["name"] in ("devices", "camera_app")))

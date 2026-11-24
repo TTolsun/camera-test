@@ -161,6 +161,13 @@ class Device:
     def package_foreground(self, package):
         return self.top_package() == package
 
+    def active_camera_facing(self, package):
+        """Resolve the current client's camera ID using the HAL metadata from the same dump."""
+        summary = self.shell("sh", "-c", "dumpsys media.camera | grep -E "
+                             "'^Active Camera Clients:|^[[:space:]]*\\(Camera ID:|"
+                             "^== Camera HAL device |^[[:space:]]+Facing:' || true")
+        return camera_client_facing(summary, package)
+
     def screenshot(self):
         return adb("-s", self.serial, "exec-out", "screencap", "-p", binary=True)
 
@@ -196,6 +203,27 @@ class Device:
     def package_version(self, package):
         version = re.search(r"^\s*versionName=(\S+)", self.shell("dumpsys", "package", package), re.M)
         return version[1] if version else None
+
+
+def camera_client_facing(summary, package):
+    active = set()
+    directions = {}
+    camera = None
+    for line in summary.splitlines():
+        if line.startswith("=="):
+            header = re.fullmatch(r"== Camera HAL device \S+/([^/ ]+) \([^)]*\) static information: ==", line.strip())
+            camera = header[1] if header else None
+        elif client := re.match(r"\s*\(Camera ID: ([^, ]+),.*?Client Package Name: ([^, )]+)", line):
+            if client[2] == package:
+                active.add(client[1])
+        elif camera and (direction := re.fullmatch(r"\s*Facing: (\w+)\s*", line)):
+            directions.setdefault(camera, set()).add(direction[1].lower())
+    if not active or any(camera_id not in directions for camera_id in active):
+        return None
+    facings = set().union(*(directions[camera_id] for camera_id in active))
+    if len(facings) != 1:
+        return None
+    return {"back": "rear", "front": "front"}.get(facings.pop())
 
 
 def soc_vendor(props):

@@ -7,7 +7,10 @@
 | 명령 | ADB 필요 | 설명 |
 |---|---|---|
 | `doctor` | 예(읽기 전용) | Python, ADB, 단말 연결, 카메라 앱 버전, 화면·잠금·저장 공간을 점검하고 항목별 해결 방법을 출력합니다. 화면을 조작하지 않습니다. `--json`은 Agent용이며, 준비되지 않았으면 종료 코드가 `1`입니다. |
-| `list` | 아니요 | 등록된 시나리오 이름을 출력합니다. |
+| `mode --list` | 아니요 | 모드별 이름과 자동 촬영 가능 여부를 확인합니다. |
+| `mode "<모드명>"` | 예 | 요청한 모드만 촬영합니다. 기본은 후면이며 동영상은 5초간 녹화합니다. `--facing front`, `--duration`, `--device`, `--output-dir`, `--json`을 지원합니다. |
+| `list` | 아니요 | 기존 `run` 및 `verify-build`가 사용하는 시나리오 이름을 출력합니다. |
+| `suite` | 예 | 전·후면 모드를 확인해 모드별 촬영을 검증하고 모델·앱 버전별 등록부를 갱신합니다. |
 | `inspect` | 예 | 단말, SoC, 카메라 앱 버전, 관찰된 모드, 시나리오 상태를 확인합니다. `--no-ui`는 카메라를 열지 않습니다. |
 | `run <scenario>` | 예 | 시나리오를 한 번 실행하고 판정합니다. |
 | `verify-build <scenario>` | 예 | 시나리오를 반복 실행해 집계하고 결정을 내립니다. |
@@ -17,6 +20,34 @@
 | `screens compare` | 아니요 | 기준 화면과 저장된 실행을 비교합니다. |
 | `media inspect <mp4>` | 아니요 | MP4의 브랜드, 길이, 트랙 정보를 출력합니다. |
 | `hal begin/collect/compare` | 비교만 아니요 | Camera HAL 로그를 기능 OFF·ON으로 수집하고 비교합니다. |
+
+## 단일 모드 결과
+
+단일 모드 실행에서 `--open-only`를 지정하면 화면의 모드와 전·후면 방향을 확인한 뒤 `OPENED`를 반환합니다. 촬영 요청은 저장 파일을 검증한 뒤 `PASS`를 반환합니다. 두 경우 모두 성공 종료 코드는 0입니다. 연속 요청의 예시는 [README](../README.md#사내-agent에-모드-하나-요청하기)를 참고합니다.
+
+## suite 옵션과 결과
+
+| 옵션 | 설명 |
+|---|---|
+| `--device` | 검사할 단말의 ADB 일련번호입니다. 실기기가 한 대이면 생략할 수 있습니다. |
+| `--duration` | 모드별 녹화 시간입니다. 1~60초 중 지정하며 기본값은 5초입니다. |
+| `--output-dir` | 실행 폴더와 기본 등록부를 저장할 상위 폴더입니다. 기본값은 `runs/suite`입니다. |
+| `--registry` | 공유하거나 재사용할 등록부 파일입니다. 기본값은 `<output-dir>/registry.json`입니다. |
+| `--rescan` | 같은 모델과 앱 버전의 목록이 있어도 전·후면 목록을 다시 탐색합니다. |
+| `--json` | stdout에 `suite.json`과 같은 구조의 JSON을 출력합니다. 진행 상황은 stderr로 출력합니다. |
+
+후면 사진을 찍고 전면으로 전환한 뒤 전면 사진과 동영상을 확인합니다. 후면으로 복귀한 것이 확인되면 목록의 다른 모드를 검사합니다. 사진은 새 파일의 경로와 크기를 기록하고, 영상은 파일 크기와 MP4 트랙 및 프레임 수를 확인합니다. 일반 녹화에서는 길이도 판정합니다. 녹화가 계속 중일 가능성이 있으면 후속 탭을 중단합니다. 앱 버전이 새로우면 화면에서 모드와 방향을 확인한 뒤 촬영합니다.
+
+| 필드 | 읽는 법 |
+|---|---|
+| `device`, `profile` | 단말 모델, 앱 버전 및 내장 프로필에서 그 버전을 검증했는지 보여 줍니다. |
+| `steps` | 필수 단계와 모드별 판정입니다. `facing_checks`에 방향의 근거가 있고 `evidence`에 확인한 파일 정보가 있습니다. |
+| `inventories` | 전·후면 화면에서 관찰한 목록입니다. `source`가 `registry`이면 같은 버전에서 저장한 목록입니다. 경고가 있는 탐색 결과는 다음 실행의 비교 기준으로 저장하지 않습니다. |
+| `ui_backends` | 이번 실행에서 화면 읽기에 성공한 방식입니다. `preview`는 도구에 포함된 UiAutomator 테스트이며 앱 설치 없이 실행합니다. `standard`는 단말의 기본 UI 덤프입니다. |
+| `registry` | 등록부 경로, 갱신 여부, 새로 관찰하거나 사라진 모드, 이전 검증 기록을 보여 줍니다. 이전 앱 버전의 증거는 새 버전의 통과 판정에 쓰이지 않습니다. |
+| `artifacts`, `next_action` | 실행 폴더의 보고서와 결과 JSON 경로 및 후속 조치입니다. |
+
+`PASS`는 실행한 검사를 통과했다는 뜻입니다. 직접 촬영이 필요한 모드(`MANUAL`), 별도 앱(`EXTERNAL_APP`), 라벨을 인식하지 못한 모드(`UNKNOWN_MODE`), 요청한 방향으로 열 수 없던 선택 모드(`UNVERIFIED_FACING`)의 상태도 따로 확인합니다. 선택 모드가 반대 방향에서 열리고 전환 버튼이 있으면 한 번 전환을 시도합니다. 이때 모드와 방향이 모두 확인되어야 촬영합니다. 필수 방향 전환이나 촬영에 실패하면 종료 코드는 `1`이며, 화면 잠금이나 ADB 등 환경 문제가 실행을 막으면 `3`입니다. 통과는 `0`입니다. 등록부에 쓰지 못하면 증거를 실행 폴더에 남기고 `1`을 반환합니다.
 
 ## run 옵션
 
@@ -44,7 +75,7 @@
 | `PRECHECK_SCREEN_OFF` | `dumpsys power`의 `mWakefulness`가 `Awake`가 아닙니다(`Asleep`, `Dozing`). |
 | `PRECHECK_LOCKED` | `dumpsys window`의 `isKeyguardShowing=true`입니다(구형 Android는 `mShowingLockscreen=true`). |
 | `PRECHECK_LOW_STORAGE` | `/sdcard`의 사용 가능 공간이 500MB(`preflight.py`의 `MIN_FREE_BYTES`) 미만입니다. |
-| `PRECHECK_DEVICE_BUSY` | `--require-idle` 또는 `verify-build`일 때만 점검합니다. 최상단 앱이 카메라도 홈 런처도 아닙니다. |
+| `PRECHECK_DEVICE_BUSY` | `suite`, `verify-build`, `run --require-idle`에서 점검합니다. 최상단 앱이 카메라도 홈 런처도 아닙니다. |
 
 ## 실패 분류
 
@@ -62,7 +93,7 @@
 
 | 경고 | 뜻 |
 |---|---|
-| `UNVERIFIED_CAMERA_VERSION` | `--allow-unverified-version`으로 검증 목록에 없는 버전을 실행했습니다. |
+| `UNVERIFIED_CAMERA_VERSION` | 내장 프로필의 검증 목록에 없는 앱 버전을 실행했습니다. |
 | `UI_DRIFT_BREAKING` | 기준 화면 대비 프로필 선택자나 프로필 문구가 바뀌었습니다. |
 | `MEDIA_NO_AUDIO` | 영상에 오디오 트랙이 없습니다. 카메라 설정에서 소리를 끌 수 있으므로 실패로 보지 않습니다. |
 | `VIDEO_CLEANUP_FAILED` | `--cleanup-video`가 단말의 MP4를 지우지 못했습니다. |

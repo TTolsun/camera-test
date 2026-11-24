@@ -132,6 +132,17 @@ GUIDANCE = {
     "MEDIA_NO_VIDEO": _media,
     "MEDIA_NO_FRAMES": _media,
     "MEDIA_DURATION": _media,
+    # suite: camera facing, photos and the registry.
+    "SUITE_UI_UNAVAILABLE": "이 단계에서 카메라 화면을 읽지 못했습니다. 단말을 확인하고, 카메라가 특수 모드에 있으면 사진 모드로 바꾼 뒤 다시 실행합니다. 특정 모드에서 반복되면 camera-ui-diagnostics 스킬로 해당 화면을 확인합니다.",
+    "SWITCH_NOT_FOUND": "화면에서 전면·후면 전환 버튼을 찾지 못했습니다. 단말에서 사진 모드의 전환 버튼을 확인합니다. 버튼은 보이는데 같은 오류가 나면 실패한 단계 폴더의 failure-ui.xml에서 버튼의 리소스 ID를 확인합니다.",
+    "FACING_UNVERIFIED": "촬영 화면의 카메라 방향을 확인하지 못했습니다. 전환 버튼의 문구가 달라졌다면 failure-ui.xml에서 문구와 실제 방향을 확인하고 `suite.py`의 `SWITCH_LABEL_FACING`을 갱신합니다.",
+    "FACING_SWITCH_UNVERIFIED": "전환 버튼을 누른 뒤 목표 카메라를 확인하지 못했습니다. 단말 화면에서 전환 여부를 확인합니다. 전환됐다면 버튼 문구를 확인하고, 전환되지 않았다면 앱 동작 문제로 보고합니다.",
+    "FACING_MISMATCH": "촬영하려던 카메라와 화면이 가리키는 카메라가 달라졌습니다. 앱이 방향을 조용히 되돌렸을 수 있으므로 앱 동작 문제로 보고합니다. 이 촬영은 증거로 등록하지 않았습니다. 첨부할 파일: 해당 단계 폴더의 failure-ui.xml, failure.png와 report.md.",
+    "MODE_NOT_SELECTED": "모드를 눌렀지만 다른 모드가 그대로 선택되어 있습니다. 해당 단계 폴더의 failure-ui.xml에서 모드 표시(content-desc 또는 instant_mode_title)가 프로필 문구와 같은지 확인합니다.",
+    "IMAGE_NOT_SAVED": "셔터를 눌렀지만 새로운 사진 파일이 저장되지 않았습니다. 앱 동작 문제로 보고합니다. 첨부할 파일: 해당 단계 폴더의 failure.png와 report.md.",
+    "AMBIGUOUS_IMAGE": "한 번의 촬영에 서로 다른 사진 여러 장이 생겨 어느 것이 이번 촬영인지 알 수 없습니다. 단말을 다른 사람이 쓰고 있지 않은지 확인하고 다시 실행합니다.",
+    "REGISTRY_INVALID": "등록부 파일을 읽지 못했습니다. 덮어쓰지 않았으므로 파일 내용을 확인해 복구하거나, 새로 시작하려면 파일을 다른 이름으로 옮긴 뒤 다시 실행합니다. 경로는 `--registry`로 바꿀 수 있습니다.",
+    "REGISTRY_BUSY": "다른 camera-test가 등록부를 갱신하고 있어 이번 결과를 저장하지 못했습니다. 실행 폴더의 suite.json에 결과는 남아 있습니다. 앞선 실행이 끝난 뒤 `suite`를 다시 실행합니다.",
     # Arguments, saved runs, golden sets, baselines.
     "INVALID_ARGUMENTS": "옵션 조합이 잘못되었습니다. `--help`로 사용법을 확인합니다. `--merge`와 `--force`는 함께 쓸 수 없습니다.",
     "INVALID_BASELINE": f"기준 report.json을 읽지 못했습니다. 이전 `verify-build`가 만든 runs/verify/<batch-id>/report.json 경로인지 확인합니다. 기준이 없으면 `{PYZ} verify-build {DEFAULT_SCENARIO}`부터 실행합니다.",

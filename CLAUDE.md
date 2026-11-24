@@ -18,6 +18,31 @@ python build.py camera-test.pyz                          # 배포용 단일 실�
 - `camera-test.pyz`는 Git에 커밋되는 배포물이다. `camera_runner/` 또는 `camera_test.py`를 수정하면 `python build.py camera-test.pyz`로 다시 빌드해 함께 커밋한다. 인자 없이 실행하면 `dist/camera-test.pyz`에 생성된다.
 - 린터·포매터 설정은 없다.
 
+### suite 화면 조회 도구 재빌드
+
+`suite`는 미리보기 화면이 계속 바뀌어도 UI 계층을 읽을 수 있도록 작은 UiAutomator 테스트 JAR를 포함한다. `PreviewSnapshot.java`를 변경했다면 JDK 17, Android SDK Platform 36, Build-Tools 36.0.0으로 다음 명령을 실행한다. `ANDROID_HOME`은 SDK 설치 경로다.
+
+```powershell
+$sdkPlatform = Join-Path $env:ANDROID_HOME 'platforms/android-36'
+$sdkD8 = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/d8.bat'
+$previewBuild = Join-Path $PWD 'runs/preview-build'
+New-Item -ItemType Directory -Force $previewBuild | Out-Null
+$previewClasspath = @(
+    "$sdkPlatform/android.jar"
+    "$sdkPlatform/uiautomator.jar"
+    "$sdkPlatform/optional/android.test.runner.jar"
+    "$sdkPlatform/optional/android.test.base.jar"
+) -join [IO.Path]::PathSeparator
+javac --release 8 -classpath $previewClasspath -d $previewBuild camera_runner/assets/PreviewSnapshot.java
+if ($LASTEXITCODE -ne 0) { throw 'javac failed' }
+& $sdkD8 --min-api 26 --lib "$sdkPlatform/android.jar" --classpath "$sdkPlatform/uiautomator.jar" --output "$previewBuild/preview.jar" "$previewBuild/cameratest/PreviewSnapshot.class"
+if ($LASTEXITCODE -ne 0) { throw 'd8 failed' }
+Copy-Item -LiteralPath "$previewBuild/preview.jar" -Destination camera_runner/assets/preview.jar
+python build.py camera-test.pyz
+```
+
+실행 PC에는 JDK와 Android SDK가 추가로 필요하지 않다. 단말에는 앱을 설치하지 않으며, `suite`가 ADB로 JAR를 실행한 뒤 생성한 임시 파일을 정리한다.
+
 ## 아키텍처
 
 CLI(`camera_runner/cli.py`)가 `list`, `inspect`, `run`, `verify-build`, `profile {show,validate}`, `screens {promote,compare}`, `media inspect`, `hal {begin,collect,compare}` 하위 명령을 제공하고, 결과를 JSON으로 stdout에 출력한다. 오류는 `RunError(code, message)`로 올라와 JSON의 오류 코드가 된다.
