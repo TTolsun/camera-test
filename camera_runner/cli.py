@@ -20,7 +20,7 @@ from .profiles import record_state_stats, selector_report
 from .scenarios import SCENARIOS, active_profiles, read_profile_file, resolve_profile
 
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 
 def inspect_scenario(device, name, scenario, profile, version, skip_reason):
@@ -421,7 +421,7 @@ def examples(*lines):
 
 
 def main():
-    if sys.argv[1:2] in (["suite"], ["mode"]):
+    if sys.argv[1:2] in (["suite"], ["mode"], ["capabilities"]):
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", errors="replace")
@@ -531,7 +531,9 @@ def main():
     suite_cmd.add_argument("--device", help="ADB 일련번호입니다. 실기기가 한 대일 때는 생략합니다.")
     suite_cmd.add_argument("--output-dir", type=Path, default=Path("runs/suite"),
                            help="실행 폴더와 기본 등록부를 저장할 폴더입니다. 기본값은 runs/suite입니다.")
-    suite_cmd.add_argument("--registry", type=Path, help="등록부 파일 경로입니다. 기본값은 출력 폴더의 registry.json입니다.")
+    registry_choice = suite_cmd.add_mutually_exclusive_group()
+    registry_choice.add_argument("--registry", type=Path, help="등록부 파일 경로입니다. 기본값은 출력 폴더의 registry.json입니다.")
+    registry_choice.add_argument("--register-device", action="store_true", help="이 실기기의 전용 등록부를 갱신합니다.")
     suite_cmd.add_argument("--rescan", action="store_true", help="같은 앱 버전에서도 전·후면 모드 목록을 다시 탐색합니다.")
     suite_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5,
                            help="각 동영상의 녹화 시간입니다. 기본값은 5초입니다.")
@@ -548,11 +550,24 @@ def main():
     mode_cmd.add_argument("--duration", type=int, choices=range(1, 61), metavar="SECONDS", default=5,
                           help="동영상 녹화 시간입니다. 기본값은 5초입니다.")
     mode_cmd.add_argument("--open-only", action="store_true", help="해당 방향의 모드가 열렸는지 확인합니다.")
+    mode_cmd.add_argument("--register-device", action="store_true", help="이 실기기의 등록부에 이번 결과를 기록합니다.")
     mode_cmd.add_argument("--device", help="ADB 일련번호입니다. 실기기가 한 대일 때는 생략합니다.")
     mode_cmd.add_argument("--output-dir", type=Path, default=Path("runs/mode"),
                           help="실행 결과를 저장할 폴더입니다. 기본값은 runs/mode입니다.")
     mode_cmd.add_argument("--json", action="store_true", help="결과를 JSON으로 출력합니다.")
+    caps = commands.add_parser("capabilities", help="연결된 단말의 현재 카메라 버전에서 관찰하거나 검증한 모드를 조회합니다.")
+    caps.add_argument("--device", help="조회할 단말의 ADB 일련번호입니다.")
+    caps.add_argument("--json", action="store_true", help="결과를 JSON으로 출력합니다.")
     args = parser.parse_args()
+    if args.command == "capabilities":
+        try:
+            result = mode.capabilities(args.device)
+        except (RunError, OSError) as exc:
+            error = error_object(getattr(exc, "code", "IO_ERROR"), str(exc))
+            print(json.dumps({"error": error}, ensure_ascii=False) if args.json else error["next_action"])
+            return 3
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else mode.render_capabilities(result))
+        return 0
     if args.command == "suite":
         return run_suite_command(args)
     if args.command == "mode":

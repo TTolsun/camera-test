@@ -272,6 +272,8 @@ class Suite:
         record.pop("evidence", None)
         if result.get("facing_checks"):
             record["facing_checks"] = result["facing_checks"]
+        if result.get("mode_opened"):
+            record["mode_opened"] = True
         if result.get("evidence_discarded"):
             record["evidence_discarded"] = True
         if cls == "environment":
@@ -460,6 +462,7 @@ class Suite:
                 raise RunError("MODE_NOT_SELECTED", f"{MODE_NAMES[key]} was tapped but another mode stayed selected.") from exc
             raise
         result.pop("mode_switched_facing", None)
+        result["mode_opened"] = True
         if open_only:
             return {"facing_checks": checks}
 
@@ -681,7 +684,9 @@ def prepared_capture(args):
     serial = select_device(args.device)
     run_id = uuid4().hex[:12]
     device = SuiteDevice(serial, run_id)
-    with device_lock(device.shell("getprop", "ro.serialno") or serial), device:
+    hardware = device.shell("getprop", "ro.serialno")
+    device_registry = registry.device_path(hardware) if args.register_device else None
+    with device_lock(hardware or serial), device:
         info = device.metadata()
         version = info["camera_version"] = device.package_version(profile.package)
         if version is None:
@@ -693,14 +698,17 @@ def prepared_capture(args):
         out.mkdir(parents=True)
         version_label = "" if verified_version else " · 내장 프로필 검증 목록에 없는 버전"
         print(f"[카메라 테스트] {info.get('model')} · 갤럭시 카메라 {version}{version_label}", file=sys.stderr, flush=True)
-        yield device, profile, out, info, measured, warnings
+        yield device, profile, out, info, measured, warnings, device_registry
 
 
 def run_suite(args, tool_version, tools):
     """Run the whole suite. Returns (result, exit code). Raises RunError before the phone is touched."""
     registry_path = (args.registry or args.output_dir / "registry.json").resolve()
-    saved_registry = registry.load(registry_path)
-    with prepared_capture(args) as (device, profile, out, info, measured, warnings):
+    saved_registry = None if args.register_device else registry.load(registry_path)
+    with prepared_capture(args) as (device, profile, out, info, measured, warnings, device_registry):
+        if device_registry:
+            registry_path = device_registry
+            saved_registry = registry.load(registry_path)
         run_id, version = out.name, info["camera_version"]
         verified_version = not warnings
         suite = Suite(device, profile, out, args.duration, tools)

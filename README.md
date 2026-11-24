@@ -11,25 +11,28 @@ ADB로 연결한 갤럭시 단말에서 카메라 기능을 자동으로 재현�
 ADB 테스트 단말을 조작할 수 있는 Agent에 **“https://github.com/TTolsun/camera-test 참고해서 Pro Video 동작시켜줘”**라고 요청합니다. Agent는 다음 명령으로 프로 동영상을 짧게 녹화하고 저장된 MP4를 확인합니다.
 
 ```powershell
-python camera-test.pyz mode "Pro Video" --json
+python camera-test.pyz mode "Pro Video" --register-device --json
 ```
 
 | 요청 | Agent가 실행할 명령 |
 |---|---|
-| 전면 프로 동영상 8초 녹화해 줘 | `python camera-test.pyz mode "프로 동영상" --facing front --duration 8 --json` |
-| 야간 모드로 찍어 줘 | `python camera-test.pyz mode "야간" --json` |
+| 이 단말의 전·후면 모드를 검사해서 등록해 줘 | `python camera-test.pyz suite --register-device --json` |
+| Pro Video만 후면·전면 각각 3초 찍어서 등록해 줘 | `mode "Pro Video" --duration 3 --register-device --json`을 `--facing rear`와 `--facing front`로 각각 실행합니다. |
+| 이 단말에서 어떤 모드를 검증했어? | `python camera-test.pyz capabilities` |
+| 전면 프로 동영상 3초 녹화해 줘 | `python camera-test.pyz mode "프로 동영상" --facing front --duration 3 --register-device --json` |
+| 야간 모드로 찍어 줘 | `python camera-test.pyz mode "야간" --register-device --json` |
 | 사용할 수 있는 모드를 알려 줘 | `python camera-test.pyz mode --list`로 도구의 목록을 확인합니다. 단말 화면의 목록은 `inspect --pretty`로 확인합니다. |
 
 방향을 생략하면 후면을 사용합니다. 동영상 기본 녹화 시간은 5초입니다. 실행에는 Python과 ADB만 필요하므로 PC에서 같은 명령을 직접 써도 됩니다.
 
-“전면 Pro Video **열어줘**”라고 하면 `mode "Pro Video" --facing front --open-only`로 모드와 방향만 확인하고 셔터는 누르지 않습니다.
+“전면 Pro Video **열어줘**”라고 하면 `mode "Pro Video" --facing front --open-only --register-device`로 모드와 방향을 확인합니다. 조회 결과에는 화면 진입과 촬영·저장 성공이 따로 표시됩니다. 같은 모델이라도 단말마다 등록부가 다르며, 회사 PC의 같은 저장소 폴더에서 실행하면 기록이 누적됩니다.
 
 “**후면 Pro Video 5초 찍고 전면 일반 동영상 3초 찍어줘**”처럼 순서를 지정하면 Agent가 같은 단말에서 요청을 한 단계씩 실행합니다. PowerShell에서는 아래처럼 첫 명령이 성공한 경우에만 두 번째 명령을 실행합니다.
 
 ```powershell
-python camera-test.pyz mode "Pro Video" --facing rear --duration 5 --json
+python camera-test.pyz mode "Pro Video" --facing rear --duration 5 --register-device --json
 if ($LASTEXITCODE -eq 0) {
-    python camera-test.pyz mode "Video" --facing front --duration 3 --json
+    python camera-test.pyz mode "Video" --facing front --duration 3 --register-device --json
 }
 ```
 
@@ -57,16 +60,16 @@ if ($LASTEXITCODE -eq 0) {
 4. 카메라를 사진 모드에 두고 전·후면 모드를 확인합니다. 검사할 모드 수에 따라 몇 분이 걸릴 수 있습니다. 화면을 켜고 잠금을 푼 상태로 실행이 끝날 때까지 단말을 만지지 않습니다.
 
    ```powershell
-   python camera-test.pyz suite
+   python camera-test.pyz suite --register-device
    ```
 
-   같은 단말 모델과 앱 버전에서는 등록된 모드 목록으로 다시 촬영합니다. 카메라 설정이나 모드 배치를 바꿨다면 `suite --rescan`을 실행합니다. 새 앱 버전에서도 같은 `suite` 명령을 쓰면 모드를 탐색해 직전 버전과 비교합니다. 내장 프로필의 검증 목록에 없는 앱 버전에는 보고서에 경고가 표시됩니다.
+   같은 단말과 앱 버전에서는 등록된 모드 목록으로 다시 촬영합니다. 카메라 설정이나 모드 배치를 바꿨다면 `suite --register-device --rescan`을 실행합니다. 앱 버전이 바뀌면 위 명령이 모드를 다시 탐색합니다.
 
    이 명령은 PC의 Python과 ADB만 사용합니다. 앱과 촬영 파일은 단말에 남고, 검증한 영상은 PC에도 복사합니다.
 
 ## 결과 읽기
 
-`suite`는 진행 상황을 보여 주고, 완료 후 필수 전환과 모드별 결과를 한국어로 출력합니다. `runs/suite/<run-id>/report.md`에서 모드별 결과를 확인하고, 같은 폴더의 `suite.json`에서 사진 파일 경로와 크기, 검증한 영상 경로를 확인할 수 있습니다. `runs/suite/registry.json`에는 모델과 앱 버전, 전·후면별 모드 목록과 검증 이력이 남습니다.
+`suite`는 진행 상황을 보여 주고, 완료 후 필수 전환과 모드별 결과를 한국어로 출력합니다. `runs/suite/<run-id>/report.md`에서 모드별 결과를 확인하고, 같은 폴더의 `suite.json`에서 사진 파일 경로와 크기, 검증한 영상 경로를 확인할 수 있습니다. 실기기별 이력은 `capabilities`로 조회하며, 등록부 경로는 실행 결과의 `registry.path`에 표시됩니다.
 
 인물 동영상만 5초 녹화하고 판정하려면 `python camera-test.pyz run galaxy.portrait-video --verify-media --cleanup-video`를 실행합니다.
 

@@ -141,8 +141,9 @@ GUIDANCE = {
     "MODE_NOT_SELECTED": "모드를 눌렀지만 다른 모드가 그대로 선택되어 있습니다. 해당 단계 폴더의 failure-ui.xml에서 모드 표시(content-desc 또는 instant_mode_title)가 프로필 문구와 같은지 확인합니다.",
     "IMAGE_NOT_SAVED": "셔터를 눌렀지만 새로운 사진 파일이 저장되지 않았습니다. 앱 동작 문제로 보고합니다. 첨부할 파일: 해당 단계 폴더의 failure.png와 report.md.",
     "AMBIGUOUS_IMAGE": "한 번의 촬영에 서로 다른 사진 여러 장이 생겨 어느 것이 이번 촬영인지 알 수 없습니다. 단말을 다른 사람이 쓰고 있지 않은지 확인하고 다시 실행합니다.",
-    "REGISTRY_INVALID": "등록부 파일을 읽지 못했습니다. 덮어쓰지 않았으므로 파일 내용을 확인해 복구하거나, 새로 시작하려면 파일을 다른 이름으로 옮긴 뒤 다시 실행합니다. 경로는 `--registry`로 바꿀 수 있습니다.",
-    "REGISTRY_BUSY": "다른 camera-test가 등록부를 갱신하고 있어 이번 결과를 저장하지 못했습니다. 실행 폴더의 suite.json에 결과는 남아 있습니다. 앞선 실행이 끝난 뒤 `suite`를 다시 실행합니다.",
+    "REGISTRY_INVALID": "등록부 파일을 읽지 못했습니다. 파일 내용을 확인해 복구하거나, 새로 시작하려면 파일을 다른 이름으로 옮긴 뒤 다시 실행합니다.",
+    "DEVICE_ID_UNAVAILABLE": "ADB에서 단말 식별 정보를 읽을 수 없습니다. 연결한 테스트 단말에서 adb shell getprop ro.serialno 출력을 확인합니다.",
+    "REGISTRY_BUSY": "다른 camera-test가 등록부를 갱신하고 있습니다. 실행 폴더의 결과 파일을 확인하고, 앞선 실행이 끝난 뒤 같은 명령을 다시 실행합니다.",
     # Arguments, saved runs, golden sets, baselines.
     "INVALID_ARGUMENTS": "옵션 조합이 잘못되었습니다. `--help`로 사용법을 확인합니다. `--merge`와 `--force`는 함께 쓸 수 없습니다.",
     "INVALID_BASELINE": f"기준 report.json을 읽지 못했습니다. 이전 `verify-build`가 만든 runs/verify/<batch-id>/report.json 경로인지 확인합니다. 기준이 없으면 `{PYZ} verify-build {DEFAULT_SCENARIO}`부터 실행합니다.",

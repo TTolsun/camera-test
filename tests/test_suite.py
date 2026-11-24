@@ -262,6 +262,56 @@ class SingleModeTests(SuiteTestCase):
     def test_pro_video_korean_front(self):
         self.check_pro_video("프로 동영상", "front")
 
+    def capabilities(self):
+        output = StringIO()
+        with patch.object(sys, "argv", ["camera-test", "capabilities", "--json"]), redirect_stdout(output), \
+                patch.object(adb, "adb", side_effect=self.device):
+            self.assertEqual(camera_test.main(), 0)
+        return json.loads(output.getvalue())
+
+    def test_device_registration_from_suite_to_single_request(self):
+        with patch.object(registry, "DEVICE_DIRECTORY", Path(self.root.name) / "devices"):
+            code, batch = self.suite("--register-device")
+            self.assertEqual(code, 0)
+            self.device.grid["rear"].append("Pro Video")
+            code, capture, _ = self.mode("Pro Video", "--register-device")
+            self.assertEqual(code, 0)
+            self.assertEqual(batch["registry"]["path"], capture["registry"]["path"])
+            self.device.mode = "Photo"
+            code, attempt, _ = self.mode("Pro Video", "--register-device", "--facing", "front")
+            self.assertEqual((code, attempt["status"]), (1, "NOT_OBSERVED"))
+            self.assertIsNone(self.capabilities()["facings"]["front"]["modes"]["pro_video"]["capture_run"])
+            self.device.grid["front"].append("Pro Video")
+            code, opened, _ = self.mode("Pro Video", "--facing", "front", "--open-only", "--register-device")
+            self.assertEqual(code, 0)
+            shots = list(self.device.shots)
+            facings = self.capabilities()["facings"]
+            self.assertEqual(facings["rear"]["modes"]["pro_video"]["capture_run"], capture["run_id"])
+            front = facings["front"]["modes"]
+            self.assertEqual(front["photo"]["capture_run"], batch["run_id"])
+            self.assertEqual(front["pro_video"]["opened_run"], opened["run_id"])
+            self.assertIsNone(front["pro_video"]["capture_run"])
+            self.assertEqual(self.device.shots, shots)
+            self.device.video_bytes = mp4([video_track(3.2), audio_track(3.2)], seconds=3.2)
+            code, replay, _ = self.mode("프로 동영상", "--duration", "3", "--facing", "front", "--register-device")
+            self.assertEqual((code, self.device.shots[-1]), (0, ("front", "Pro Video")))
+            self.assertEqual(self.capabilities()["facings"]["front"]["modes"]["pro_video"]["capture_run"],
+                             replay["run_id"])
+            self.device.versions[GALAXY_PACKAGE] = "new-version"
+            self.assertIsNone(self.capabilities()["facings"]["rear"]["modes"]["pro_video"]["capture_run"])
+            self.assertNotEqual(registry.device_path("other-hardware"), Path(capture["registry"]["path"]))
+
+    def test_later_failed_capture_preserves_prior_proof_and_last_attempt(self):
+        with patch.object(registry, "DEVICE_DIRECTORY", Path(self.root.name)):
+            self.device.grid["rear"].append("Pro Video")
+            _, captured, _ = self.mode("Pro Video", "--register-device")
+            self.device.ignore_stop = True
+            code, failed, _ = self.mode("Pro Video", "--register-device", slow=True)
+            record = self.capabilities()["facings"]["rear"]["modes"]["pro_video"]
+            self.assertEqual((code, record["last"]["status"], record["last"]["run_id"]), (1, "FAIL", failed["run_id"]))
+            self.assertEqual(record["capture_run"], captured["run_id"])
+            self.assertEqual(record["opened_run"], failed["run_id"])
+
     def test_already_selected_mode_does_not_navigate(self):
         self.device.mode = "Pro Video"
         self.check_pro_video("pro-video", "rear")

@@ -2,10 +2,10 @@
 
 from datetime import datetime, timezone
 
-from . import suite
-from .adb import RunError
+from . import registry, suite
+from .adb import Device, RunError, select_device
 from .failures import failure_class
-from .guidance import PYZ, error_object
+from .guidance import PYZ, error_object, next_action
 
 
 def normalized(name):
@@ -50,7 +50,9 @@ def run_mode(args, tool_version, tools):
 
 def capture(args, result, tools):
     facing, key = args.facing, result["mode"]
-    with suite.prepared_capture(args) as (device, profile, out, info, measured, warnings):
+    with suite.prepared_capture(args) as (device, profile, out, info, measured, warnings, device_registry):
+        if device_registry:
+            registry.load(device_registry)
         runner = suite.Suite(device, profile, out, args.duration, tools)
 
         def work(evidence, folder):
@@ -80,8 +82,61 @@ def capture(args, result, tools):
                       recording_may_be_active=bool(step.get("recording_may_be_active")),
                       next_action=action or "조치가 필요 없습니다.",
                       artifacts={"mode": str(out / "mode.json")})
+        if device_registry:
+            result["registry"] = {"path": str(device_registry), "updated": False}
+            run = {"run_id": out.name, "at": result["finished"], "model": info.get("model") or "unknown-model",
+                   "version": info["camera_version"], "version_verified": profile.verifies(info["camera_version"]),
+                   "status": status, "facings": {facing: {"steps": [step], "requested_mode": True}}}
+            try:
+                registry.update(device_registry, run)
+                result["registry"]["updated"] = True
+            except (RunError, OSError) as exc:
+                code = getattr(exc, "code", "IO_ERROR")
+                result["registry"]["error"] = code
+                result["next_action"] = " ".join(filter(None, (action, next_action(code))))
         suite.write_json_atomic(out / "mode.json", result)
-    return result, 0 if status == "OPENED" else suite.exit_code(status)
+    code = 0 if status == "OPENED" else suite.exit_code(status)
+    if code == 0 and result.get("registry", {}).get("error"):
+        code = 1
+    return result, code
+
+
+def capabilities(serial):
+    device = Device(select_device(serial), "capabilities")
+    path = registry.device_path(device.shell("getprop", "ro.serialno"))
+    model = device.metadata().get("model") or "unknown-model"
+    version = device.package_version(suite.SCENARIOS[suite.SCENARIO].profile.package)
+    if not version:
+        raise RunError("CAMERA_APP_NOT_FOUND", "Galaxy Camera is not installed.")
+    entries = registry.load(path)["entries"]
+    facings = {}
+    for facing in suite.FACING_NAMES:
+        entry = entries.get(registry.entry_key(model, version, facing), {})
+        labels = (entry.get("inventory") or {}).get("observed", [])
+        observed, unknown = suite.classify(labels)
+        modes = {}
+        for key in suite.CATALOG:
+            record = entry.get("modes", {}).get(key, {})
+            verified = record.get("verified")
+            opened = record.get("opened") or verified
+            modes[key] = {"observed": key in observed, "opened_run": opened.get("run_id") if opened else None,
+                          "capture_run": verified.get("run_id") if verified else None, "last": record.get("last")}
+        facings[facing] = {"modes": modes, "unrecognized": unknown}
+    return {"model": model, "app_version": version, "registry": str(path), "facings": facings}
+
+
+def render_capabilities(result):
+    lines = [f"{result['model']} · 카메라 {result['app_version']}"]
+    for facing, block in result["facings"].items():
+        lines.append(suite.FACING_NAMES[facing])
+        for key, item in block["modes"].items():
+            evidence = ("촬영·저장 확인" if item["capture_run"] else "진입 확인" if item["opened_run"]
+                        else "목록에서 관찰" if item["observed"] else "확인 기록 없음")
+            last = item["last"]
+            suffix = f" · 최근 {suite.STATUS_TEXT.get(last['status'], last['status'])}" if last else ""
+            lines.append(f"  {suite.MODE_NAMES[key]} · {evidence}{suffix}")
+        lines.extend(f"  {label} · 목록에서 관찰 (미등록 모드)" for label in block["unrecognized"])
+    return "\n".join(lines)
 
 
 def render(result):

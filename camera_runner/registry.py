@@ -5,6 +5,7 @@ run and replaces the file atomically. A failed run records what it saw but never
 verified evidence, and a new app version starts with an empty entry of its own.
 """
 
+from hashlib import sha256
 from pathlib import Path
 import time
 
@@ -13,9 +14,18 @@ from .verify import read_json_file, write_json_atomic
 
 SCHEMA_VERSION = 1
 HISTORY_LIMIT = 100
+DEVICE_DIRECTORY = Path("runs/devices")
 LOCK_TRIES = 10
 # Statuses that say nothing new about the mode: environment errors, skipped steps and modes not on screen.
 NOT_RECORDED = {"SKIPPED", "ENVIRONMENT_ERROR", "NOT_OBSERVED"}
+
+
+def device_path(hardware):
+    """Keep USB and wireless runs of one handset together, independently of its model."""
+    if not hardware or hardware.strip().casefold() in {"", "unknown", "null", "none"}:
+        raise RunError("DEVICE_ID_UNAVAILABLE", "ADB did not return a hardware serial for this device.")
+    key = sha256(hardware.strip().encode("utf-8")).hexdigest()
+    return (DEVICE_DIRECTORY / key / "registry.json").resolve()
 
 
 def entry_key(model, version, facing):
@@ -43,6 +53,11 @@ def load(path):
             if not isinstance(mode, dict) or (mode.get("verified") is not None and not
                     (isinstance(mode["verified"], dict) and isinstance(mode["verified"].get("at"), str))):
                 raise RunError("REGISTRY_INVALID", "Registry contains invalid verification evidence.")
+            for field in ("opened", "last"):
+                value = mode.get(field)
+                if value is not None and (not isinstance(value, dict) or not isinstance(value.get("run_id"), str)
+                        or (field == "last" and not isinstance(value.get("status"), str))):
+                    raise RunError("REGISTRY_INVALID", f"Registry contains an invalid {field} result.")
     return data
 
 
@@ -102,11 +117,13 @@ def apply_facing(data, run, facing, block):
         entry["unrecognized"] = inventory["unrecognized"]
     for step in block["steps"]:
         mode = step.get("mode")
-        if mode is None or step["status"] in NOT_RECORDED:
+        if mode is None or (step["status"] in NOT_RECORDED and not block.get("requested_mode")):
             continue
         record = modes.setdefault(mode, {"label": step.get("label"), "kind": step.get("kind")})
         record["last"] = {"run_id": run["run_id"], "at": run["at"], "status": step["status"],
                           "error_code": step.get("error_code")}
+        if step["status"] == "OPENED" or step.get("mode_opened") or (step["status"] == "PASS" and step.get("evidence")):
+            record["opened"] = {"run_id": run["run_id"], "at": run["at"]}
         if step["status"] == "PASS" and step.get("evidence"):
             record["verified"] = {"run_id": run["run_id"], "at": run["at"], "evidence": step["evidence"],
                                   "facing_checks": step.get("facing_checks"),
