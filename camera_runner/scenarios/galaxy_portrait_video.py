@@ -38,6 +38,8 @@ PROFILE = {
         "guide_text",
         "level_meter_guide", "level_meter_target", "level_meter_target_bg",
         "guide_bar", "inclinometer", "level_bg", "vertical_guide_bg",
+        # Scene suggestion (e.g. night shot) on the Photo screen; appears with room lighting.
+        "scene_button_bg",
     ],
     "log": {
         "tags": ["RecordingManager", "CameraService", "Camera3-Device", "MediaRecorder", "MPEG4Writer"],
