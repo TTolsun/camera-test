@@ -28,7 +28,7 @@ python camera-test.pyz verify-build galaxy.portrait-video --repeat 5 --golden go
 `promote`이면 배치 폴더의 `proposal/`에 새 버전을 추가한 프로필(`profile.json`)과 기준 화면(`golden/`)이 생깁니다. 도구는 코드를 직접 바꾸지 않으며, 사람이 확인하고 반영합니다.
 
 1. `report.md`에서 통과율, 지연 시간, 영상 요약이 예상과 맞는지 확인합니다.
-2. `camera_runner/scenarios/galaxy_portrait_video.py`의 `PROFILE`에서 `verified_versions`에 새 버전을 추가합니다. 제안 프로필에서 바뀐 값이 있으면 함께 옮깁니다.
+2. `camera_runner/apps/galaxy_camera.py`의 `PROFILE`에서 `verified_versions`에 새 버전을 추가합니다. 제안 프로필에서 바뀐 값이 있으면 함께 옮깁니다.
 3. `proposal/golden/`을 `golden/galaxy.portrait-video/<새 버전>/`으로 복사합니다.
 4. `python build.py camera-test.pyz`로 다시 빌드하고, 테스트를 통과시킨 뒤 PR로 올립니다.
 
@@ -159,3 +159,11 @@ python camera-test.pyz verify-build galaxy.portrait-video --repeat 5 --golden go
 - `environment_blocked`로 끝난 빌드는 다음 시간에 다시 시도합니다. 그 밖의 결정(실패 포함)은 같은 빌드에서 반복하지 않습니다.
 - 프로필을 고쳤거나 같은 빌드를 다시 확인하려면 `--if-changed` 없이 실행합니다.
 - 새 빌드를 승인했다면 배치 파일의 `--golden`과 `--baseline`을 새 버전 것으로 바꿉니다.
+
+## 다른 단말이나 카메라 앱 추가하기
+
+같은 Galaxy Camera를 다른 단말에서 검증할 때는 `--device <ADB 일련번호> --register-device`로 실행합니다. 지원 모드와 촬영 방향은 해당 단말에서 새로 확인합니다. 앱 버전의 프로필 검증 이력과 단말에서 실제로 촬영한 이력은 별도로 관리합니다.
+
+새 앱은 단말에서 모드 선택, 전·후면 식별, 녹화 시작·종료, 새 파일 저장을 확인한 뒤 `camera_runner/apps/`에 앱 구현을 두고 `APPS`에 패키지명으로 등록합니다. 모드 목록과 UI 문구는 앱 구현에서 관리합니다. `capture.py`는 앱이 읽은 상태를 바탕으로 촬영 전후의 모드와 방향을 대조합니다. `suite`의 기본 흐름에는 일반 사진(`photo`), 일반 동영상(`video`), 전·후면 전환이 포함됩니다. 앱이 녹화 상태를 화면에서 확인한다면 로그 프로필에서 `record_state`를 생략할 수 있습니다.
+
+`tests/test_mode.py`의 두 앱 테스트는 같은 단말·버전에서 다른 UI 신호와 저장 경로를 쓰는 경우를 보여 줍니다. 새 앱을 실제로 등록할 때는 해당 앱으로 `mode`와 `capabilities`를 실행해 저장 파일과 단말 기록을 대조합니다. 반복 빌드 검증이 필요하면 `scenarios.py`에 시나리오 이름, 프로필과 실행 함수를 연결합니다.

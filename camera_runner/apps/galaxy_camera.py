@@ -1,12 +1,14 @@
-"""Samsung Galaxy Camera Portrait Video scenario."""
+"""Galaxy Camera mode catalog, UI controls and saved-media evidence."""
 
-import re
 import time
 
 from ..adb import RunError
+from ..android_ui import center, ui_or_none, wait_for
 from ..logcat import LOG_LINE, elapsed_ms, line_stamp
+from ..profiles import parse_profile
 
 
+NAME = "Galaxy Camera"
 # Built-in profile. The selectors, labels and recording-state log were confirmed on SM-S936N
 # (Qualcomm SM8750, Korean UI) for the verified versions below. A new app build is supported by
 # editing profile data: export it with `profile show`, adjust it, then verify it on a device with
@@ -57,14 +59,81 @@ PHASES = {
 }
 
 
-def wait_for(probe, timeout, code, message, interval=0.25):
-    deadline = time.monotonic() + timeout
-    while True:
-        if value := probe():
-            return value
-        if time.monotonic() >= deadline:
-            raise RunError(code, message)
-        time.sleep(interval)
+profile = parse_profile(PROFILE, "built-in")
+
+# Catalog of the Galaxy Camera modes seen on SM-S936N. kind: photo/video are captured, manual needs a person,
+# external opens a separate app. A label outside this table is reported as unrecognized and never captured.
+CATALOG = {key: {"kind": kind, "labels": frozenset(labels)} for key, kind, labels in (
+    ("photo", "photo", ("사진", "photo")),
+    ("portrait_photo", "photo", ("인물 사진", "인물사진", "portrait")),
+    ("night", "photo", ("야간", "night")),
+    ("food", "photo", ("음식", "food")),
+    ("pro_photo", "photo", ("프로", "pro")),
+    ("panorama", "manual", ("파노라마", "panorama")),
+    ("video", "video", ("동영상", "video")),
+    ("portrait_video", "video", ("인물 동영상", "portrait video")),
+    ("pro_video", "video", ("프로 동영상", "pro video")),
+    ("slow_motion", "video", ("슬로우 모션", "슬로 모션", "slow motion")),
+    ("hyperlapse", "video", ("하이퍼랩스", "hyperlapse")),
+    ("expert_raw", "external", ("expert raw", "엑스퍼트 raw")),
+)}
+LABEL_KEY = {label: key for key, mode in CATALOG.items() for label in mode["labels"]}
+TIME_SHIFTED = {"slow_motion", "hyperlapse"}  # Their playback length is not the recording time.
+MODE_NAMES = {"photo": "사진", "portrait_photo": "인물 사진", "night": "야간", "food": "음식", "pro_photo": "프로 사진",
+              "panorama": "파노라마", "video": "동영상", "portrait_video": "인물 동영상", "pro_video": "프로 동영상",
+              "slow_motion": "슬로우 모션", "hyperlapse": "하이퍼랩스", "expert_raw": "Expert RAW"}
+SHUTTER_LABELS = frozenset(("촬영", "사진 촬영", "take picture", "shutter", "capture"))
+SWITCH_LABEL_FACING = {
+    "전면 카메라로 전환": "rear",
+    "후면 카메라로 전환": "front",
+    "switch to front camera": "rear",
+    "switch to rear camera": "front",
+    "switch to back camera": "front",
+}
+
+
+def mode_key(label):
+    return LABEL_KEY.get((label or "").strip().casefold())
+
+
+def switch_state(root, profile):
+    """(switch node, camera in use). The label names the destination, so the camera in use is the opposite.
+
+    (None, None): no switch on screen. (node, None): a switch whose label does not name exactly one camera.
+    """
+    switches = [node for node in root.iter("node") if node.get("package") == profile.package
+                and node.get("resource-id") == f"{profile.package}:id/switch_camera_button"]
+    if len(switches) != 1:
+        return None, None
+    node = switches[0]
+    label = (node.get("content-desc") or node.get("text") or "").strip().casefold()
+    return node, SWITCH_LABEL_FACING.get(label)
+
+
+def read_state(root, profile, device=None):
+    node, facing = switch_state(root, profile)
+    label = (node.get("content-desc") or node.get("text") or "").strip() if node is not None else None
+    hal = device.active_camera_facing(profile.package) if node is None and device is not None else None
+    return {"switch": node, "facing": facing or hal, "label": label,
+            "source": "switch_label" if facing else "camera_service" if hal else None}
+
+
+def switch_facing(device, state, *, require_enabled=False):
+    control = state["switch"]
+    if control is None:
+        return False
+    if require_enabled and (control.get("enabled") != "true" or control.get("clickable") != "true"):
+        return False
+    device.tap(center(control))
+    return True
+
+
+def current_mode(root, profile):
+    title = find_node(root, profile, "instant_mode_title")
+    if title is not None and title.get("text", "").strip():
+        return title.get("text").strip()
+    strip = find_node(root, profile, "mode_strip")
+    return (strip.get("content-desc", "").split(",", 1)[0].strip() or None) if strip is not None else None
 
 
 def find_node(root, profile, key, labels=None):
@@ -78,16 +147,7 @@ def find_node(root, profile, key, labels=None):
     return None
 
 
-def center(node):
-    bounds = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
-    if bounds:
-        left, top, right, bottom = map(int, bounds.groups())
-        if left < right and top < bottom:
-            return (left + right) // 2, (top + bottom) // 2
-    raise RunError("INVALID_UI_BOUNDS", "Camera control is not visible on screen.")
-
-
-def portrait_ready(root, profile):
+def profile_mode_ready(root, profile):
     return find_node(root, profile, "mode_ready") is not None
 
 
@@ -102,37 +162,81 @@ def launch_camera(device, profile):
     require_foreground(device, profile)
 
 
-def enter_portrait_video(device, profile, result):
-    steps = result["steps"]
-    launch_camera(device, profile)
-    mode_text, more_text = profile.label_set("mode"), profile.label_set("more")
+def select_mode(device, profile, key, *, scenario_result=None):
+    """Open the mode from the strip or More. Nodes come from the live hierarchy; nothing is guessed."""
+    traced = scenario_result is not None
+    labels = profile.label_set("mode") if traced else CATALOG[key]["labels"]
 
-    root = device.ui()
-    # Galaxy Camera remembers its last mode, so the start state is part of the checkpoint name.
-    device.checkpoint("initial_in_mode" if portrait_ready(root, profile) else "initial")
-    if not portrait_ready(root, profile):
-        device.phase = "mode_select"
-        if (back := find_node(root, profile, "instant_mode_back")) is not None:
-            device.tap(center(back))
+    def on_mode_strip(root):
+        return mode_key(current_mode(root, profile)) == key and find_node(root, profile, "more_grid_item") is None
+
+    if traced:
+        root = device.ui()
+        already_ready = profile_mode_ready(root, profile)
+        device.checkpoint("initial_in_mode" if already_ready else "initial")
+        if already_ready:
+            return
+    else:
+        root = wait_for(lambda: ui_or_none(device), 8, "UI_UNAVAILABLE",
+                        "Camera UI was unavailable before mode selection.")
+        if on_mode_strip(root):
+            return
+    device.phase = "mode_select"
+    if (back := find_node(root, profile, "instant_mode_back")) is not None:
+        device.tap(center(back))
+
+        def menu_open():
+            menu = ui_or_none(device)
+            if menu is not None and find_node(menu, profile, "instant_mode_back") is None:
+                if find_node(menu, profile, "mode_button") is not None or find_node(menu, profile, "more_grid_item") is not None:
+                    return menu
+            return None
+
+        if traced:
             root = device.ui()
-        tile = find_node(root, profile, "more_grid_item", mode_text)
-        if tile is None:
-            pinned = find_node(root, profile, "mode_button", mode_text)
-            if pinned is not None:
-                tile = pinned
-            elif (more := find_node(root, profile, "mode_button", more_text)) is not None:
-                device.tap(center(more))
-                opened = device.ui()
-                device.checkpoint("more_opened")
-                tile = find_node(opened, profile, "more_grid_item", mode_text)
-                if tile is not None:
-                    steps.append("more_opened")
-        if tile is None:
-            raise RunError("MODE_NOT_FOUND", "Portrait Video was not found on the Camera mode strip or in More.")
-        device.tap(center(tile))
+        else:
+            root = wait_for(menu_open, 8, "MODE_NOT_READY", "Camera mode menu did not open after leaving the active mode.")
+            if on_mode_strip(root):
+                return
+    tile = find_node(root, profile, "more_grid_item", labels)
+    if tile is None:
+        tile = find_node(root, profile, "mode_button", labels)
+    if tile is None and (more := find_node(root, profile, "mode_button", profile.label_set("more"))) is not None:
+        device.tap(center(more))
+        if traced:
+            menu = device.ui()
+        else:
+            def more_open():
+                menu = ui_or_none(device)
+                return menu if menu is not None and find_node(menu, profile, "more_grid_item") is not None else None
 
-    start_text = profile.label_set("record_start")
+            menu = wait_for(more_open, 8, "MODE_NOT_READY", "Camera More menu did not appear.")
+        tile = find_node(menu, profile, "more_grid_item", labels)
+        if traced:
+            device.checkpoint("more_opened")
+            if tile is not None:
+                scenario_result["steps"].append("more_opened")
+    if tile is None:
+        name = key.replace("_", " ").title() if traced else MODE_NAMES[key]
+        raise RunError("MODE_NOT_FOUND", f"{name} was not found on the Camera mode strip or in More.")
+    device.tap(center(tile))
 
+
+def shutter_control(root, profile, key):
+    labels = profile.label_set("record_start") if CATALOG[key]["kind"] == "video" else SHUTTER_LABELS
+    node = find_node(root, profile, "record_button", labels)
+    if node is not None and node.get("enabled") == "true" and node.get("clickable") == "true":
+        return node
+    return None
+
+
+def shutter_point(root, profile, key):
+    control = shutter_control(root, profile, key)
+    return center(control) if control is not None else None
+
+
+def scenario_shutter(device, profile, key, result):
+    name = key.replace("_", " ").title()
     dumps = {"failed": False, "count": 0}
 
     def ready_button():
@@ -146,17 +250,17 @@ def enter_portrait_video(device, profile, result):
             dumps["count"] += 1
             return None
         dumps["failed"] = False
-        if portrait_ready(state, profile):
-            node = find_node(state, profile, "record_button", start_text)
-            if node is not None and node.get("enabled") == "true" and node.get("clickable") == "true":
+        if profile_mode_ready(state, profile):
+            point = shutter_point(state, profile, key)
+            if point is not None:
                 device.checkpoint("mode_ready")
-                return center(node)
+                return point
         return None
 
     device.phase = "mode_ready"
 
     try:
-        return wait_for(ready_button, 8, "MODE_NOT_READY", "Portrait Video and its Record button were not ready.")
+        return wait_for(ready_button, 8, "MODE_NOT_READY", f"{name} and its Record button were not ready.")
     except RunError as exc:
         if exc.code == "MODE_NOT_READY" and dumps["failed"]:
             raise RunError("UI_UNAVAILABLE", "Camera UI hierarchy stayed unavailable while waiting for the Record button.") from exc
@@ -233,9 +337,9 @@ def scan_modes(device, profile, launch=True, allow_partial=False):
     observed = strip_modes | more_modes
     if title is not None and initial_mode:
         observed.add(initial_mode)
-    portrait_seen = portrait_ready(initial, profile) or any(mode.casefold() in mode_text for mode in observed)
+    target_seen = profile_mode_ready(initial, profile) or any(mode.casefold() in mode_text for mode in observed)
     return {"observed_modes": sorted(observed), "mode_strip": sorted(strip_modes),
-            "more_menu": sorted(more_modes), "warnings": warnings}, portrait_seen
+            "more_menu": sorted(more_modes), "warnings": warnings}, target_seen
 
 
 def require_foreground(device, profile):
@@ -370,7 +474,30 @@ def record(device, profile, point, seconds, result):
     return start_clock
 
 
-def execute(device, profile, seconds, result):
-    point = enter_portrait_video(device, profile, result)
-    result["steps"].append("portrait_video_ready")
-    return record(device, profile, point, seconds, result)
+def images(device):
+    listing = device.shell(
+        "sh", "-c", "if [ -d /sdcard/DCIM/Camera ]; then find /sdcard/DCIM/Camera -maxdepth 1 -type f "
+        "\\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.heic' -o -iname '*.dng' \\) ! -name '.*'; fi")
+    return {line for line in listing.splitlines() if line.startswith("/sdcard/DCIM/Camera/")}
+
+
+def verify_image(device, before):
+    """The new files of one shot (a JPEG and its RAW share a name) once every size is nonempty and unchanged."""
+    sizes = {}
+
+    def saved():
+        new = images(device) - before
+        if not new:
+            return None
+        if len({path.rsplit(".", 1)[0] for path in new}) > 1:
+            raise RunError("AMBIGUOUS_IMAGE", "Images of more than one shot appeared in the Camera folder.")
+        stable, total = True, 0
+        for path in sorted(new):
+            length = device.shell("stat", "-c", "%s", path)
+            size = int(length) if length.isdecimal() else 0
+            stable = stable and size > 0 and sizes.get(path) == size
+            sizes[path] = size
+            total += size
+        return {"device_paths": sorted(new), "bytes": total} if stable else None
+
+    return wait_for(saved, 15, "IMAGE_NOT_SAVED", "A new nonempty Camera image was not found.")

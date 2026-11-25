@@ -2,13 +2,15 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 import json
 from pathlib import Path
 import re
 
-from ..adb import Device, RunError
-from ..profiles import AppProfile, decode_json_text, parse_profile
-from . import galaxy_portrait_video
+from .adb import Device, RunError
+from .apps import galaxy_camera
+from .capture import CaptureSession
+from .profiles import AppProfile, decode_json_text, parse_profile
 
 
 @dataclass(frozen=True)
@@ -23,14 +25,18 @@ class Scenario:
     phases: dict = field(default_factory=dict)
 
 
+def execute_mode(app, key, device, profile, seconds, result):
+    return CaptureSession(device, profile, app).capture(key, seconds, result)
+
+
 SCENARIOS = {
     "galaxy.portrait-video": Scenario(
-        app_name="Galaxy Camera",
-        profile=parse_profile(galaxy_portrait_video.PROFILE, "built-in"),
+        app_name=galaxy_camera.NAME,
+        profile=galaxy_camera.profile,
         video_filename="portrait-video.mp4",
-        scan=galaxy_portrait_video.scan_modes,
-        execute=galaxy_portrait_video.execute,
-        phases=galaxy_portrait_video.PHASES,
+        scan=galaxy_camera.scan_modes,
+        execute=partial(execute_mode, galaxy_camera, "portrait_video"),
+        phases=galaxy_camera.PHASES,
     ),
 }
 

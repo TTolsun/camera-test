@@ -8,14 +8,13 @@ proposal folder that a person reviews and applies.
 from collections import Counter
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 import statistics
-import tempfile
 from types import SimpleNamespace
 from uuid import uuid4
 
 from . import screens
+from .json_files import read_json_file, write_json_atomic
 from .adb import Device, RunError, select_device
 from .guidance import decision_next_action
 from .profiles import parse_profile
@@ -42,30 +41,6 @@ NEXT_STEPS_BY_DECISION = {
 
 def now_utc():
     return datetime.now(timezone.utc)
-
-
-def read_json_file(path, code, what):
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as exc:
-        raise RunError(code, f"{what} could not be read: {exc}") from exc
-    if not isinstance(data, dict):
-        raise RunError(code, f"{what} must be a JSON object.")
-    return data
-
-
-def write_json_atomic(path, data):
-    """Write through a temp file in the same folder and replace, so readers never see a half-written file."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as file:
-            file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-        os.replace(temp, path)
-    except BaseException:
-        Path(temp).unlink(missing_ok=True)
-        raise
 
 
 def read_state(path):
@@ -304,7 +279,7 @@ def render_markdown(report, batch):
         ]
         lines += ["```", "",
                   "승인하면 다음 순서로 팀 전체에 반영합니다.",
-                  f"1. `{proposal['profile']}`의 `verified_versions` 변화를 `camera_runner/scenarios/galaxy_portrait_video.py`의 `PROFILE`에 옮깁니다.",
+                  f"1. `{proposal['profile']}`의 `verified_versions` 변화를 `{scenario}`의 내장 앱 프로필에 옮깁니다.",
                   "2. `python build.py camera-test.pyz`로 다시 빌드하고 커밋합니다."
                   + (f" 골든은 `{proposal['golden']}`를 `golden/{version}`으로 복사해 보관합니다." if proposal["golden"] else "")]
     elif decision == "needs_profile_fix":

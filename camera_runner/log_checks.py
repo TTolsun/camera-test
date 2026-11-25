@@ -1,7 +1,8 @@
+"""Load named app and HAL log checks and resolve them for the device SoC."""
+
 from dataclasses import dataclass
 import json
 import re
-
 
 from .logcat import LOG_TAG_PATTERN
 

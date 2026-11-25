@@ -6,17 +6,17 @@ from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import patch
 
 import camera_test
 from camera_runner import adb, guidance
 from camera_runner.failures import CLASS_BY_CODE
-from camera_runner.scenarios import galaxy_portrait_video
-from tests.test_camera_scenarios import GALAXY_PACKAGE, GALAXY_SCENARIO, OWNER_APP, MockCameraAdb
+from tests.camera_fixtures import GALAXY_PACKAGE, GALAXY_SCENARIO, OWNER_APP, MockCameraAdb
 
 
-PACKAGE_DIR = Path(camera_test.__file__).parent / "camera_runner"
+PACKAGE_DIR = Path(__file__).resolve().parents[1] / "camera_runner"
 
 
 class GuidanceTableTests(unittest.TestCase):
@@ -73,9 +73,9 @@ class CliGuidanceTests(unittest.TestCase):
     def cli(self, *arguments, slow=False):
         output = StringIO()
         with patch.object(sys, "argv", ["camera-test", *map(str, arguments)]), redirect_stdout(output), \
-                patch.object(adb, "adb", side_effect=self.device), patch.object(galaxy_portrait_video.time, "sleep"):
+                patch.object(adb, "adb", side_effect=self.device), patch.object(time, "sleep"):
             if slow:
-                with patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+                with patch.object(time, "monotonic", side_effect=count(0, 5)):
                     code = camera_test.main()
             else:
                 code = camera_test.main()

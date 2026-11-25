@@ -25,8 +25,8 @@ class AppProfile:
     selectors: dict
     labels: dict
     log_tags: tuple
-    record_state_tag: str
-    record_state_pattern: re.Pattern
+    record_state_tag: str | None
+    record_state_pattern: re.Pattern | None
     source: str
     volatile_ids: tuple = ()  # Resource ids drift comparison ignores (transient hints and the like).
 
@@ -44,6 +44,9 @@ class AppProfile:
                 "version_verified": self.verifies(version)}
 
     def to_dict(self):
+        log = {"tags": list(self.log_tags)}
+        if self.record_state_pattern is not None:
+            log["record_state"] = {"tag": self.record_state_tag, "pattern": self.record_state_pattern.pattern}
         return {
             "schema_version": SCHEMA_VERSION,
             "scenario": self.scenario,
@@ -53,10 +56,7 @@ class AppProfile:
             "selectors": dict(self.selectors),
             "labels": {key: list(values) for key, values in self.labels.items()},
             "volatile_ids": list(self.volatile_ids),
-            "log": {
-                "tags": list(self.log_tags),
-                "record_state": {"tag": self.record_state_tag, "pattern": self.record_state_pattern.pattern},
-            },
+            "log": log,
         }
 
 
@@ -97,12 +97,19 @@ def parse_profile(data, source, template=None):
     if template is not None and scenario != template.scenario:
         raise ValueError(f"Profile is for {scenario}, not {template.scenario}.")
     log = data.get("log")
-    if not isinstance(log, dict) or not isinstance(log.get("record_state"), dict):
-        raise ValueError("log.record_state must be an object.")
-    record_tag = _text(log["record_state"].get("tag"), "log.record_state.tag")
-    pattern = re.compile(_text(log["record_state"].get("pattern"), "log.record_state.pattern"))
-    if pattern.groups != 2:
-        raise ValueError("log.record_state.pattern must capture exactly two groups: the previous and next state.")
+    if not isinstance(log, dict):
+        raise ValueError("log must be an object.")
+    tags = _strings(log.get("tags"), "log.tags")
+    record_tag = pattern = None
+    if "record_state" in log or (template and template.record_state_pattern is not None):
+        signal = log.get("record_state")
+        if not isinstance(signal, dict):
+            raise ValueError("log.record_state must be an object.")
+        record_tag = _text(signal.get("tag"), "log.record_state.tag")
+        pattern = re.compile(_text(signal.get("pattern"), "log.record_state.pattern"))
+        if pattern.groups != 2:
+            raise ValueError("log.record_state.pattern must capture exactly two groups: the previous and next state.")
+        tags = [*tags, record_tag]
     selectors = _keyed(data.get("selectors"), "selectors", template and template.selectors, _text)
     volatile = _strings(data.get("volatile_ids", []), "volatile_ids", allow_empty=True)
     if overlap := sorted(set(volatile) & set(selectors.values())):
@@ -114,7 +121,7 @@ def parse_profile(data, source, template=None):
         verified_versions=_strings(data.get("verified_versions"), "verified_versions", allow_empty=True),
         selectors=selectors,
         labels=_keyed(data.get("labels"), "labels", template and template.labels, _strings),
-        log_tags=tuple(dict.fromkeys((*_strings(log.get("tags"), "log.tags"), record_tag))),
+        log_tags=tuple(dict.fromkeys(tags)),
         record_state_tag=record_tag,
         record_state_pattern=pattern,
         source=source,

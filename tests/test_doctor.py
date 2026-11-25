@@ -3,11 +3,14 @@ from io import StringIO
 import json
 import sys
 import unittest
+from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import patch
 
 import camera_test
 from camera_runner import adb
-from tests.test_camera_scenarios import GALAXY_PACKAGE, GALAXY_SCENARIO, OWNER_APP, MockCameraAdb
+from camera_runner.apps import APPS, galaxy_camera
+from tests.camera_fixtures import GALAXY_PACKAGE, GALAXY_SCENARIO, OWNER_APP, MockCameraAdb
 
 
 FIRST_COMMAND = 'python camera-test.pyz mode "<모드명>"'
@@ -48,6 +51,16 @@ class DoctorCheckTests(DoctorTestCase):
         self.assertIn("17.0.00.43", by_name["camera_app"]["detail"])
         self.assertTrue(all("next_action" not in item for item in result["checks"]))
 
+    def test_doctor_checks_selected_app_and_keeps_it_in_next_command(self):
+        package = "example.camera"
+        profile = replace(galaxy_camera.profile, package=package)
+        self.device.versions = {package: profile.verified_versions[0]}
+        with patch.dict(APPS, {package: SimpleNamespace(profile=profile)}):
+            code, result = self.doctor("--app", package)
+        self.assertEqual((code, result["ready"]), (0, True))
+        self.assertIn(f"--app {package}", result["next_action"])
+        self.assertNotIn(["dumpsys", "package", GALAXY_PACKAGE], self.device.commands)
+
     def test_doctor_never_taps_launches_or_captures(self):
         self.doctor()
         self.doctor("--device", "mock-phone")
@@ -57,6 +70,17 @@ class DoctorCheckTests(DoctorTestCase):
         self.assertEqual(forbidden, [])
         self.assertFalse(any(call[:3] == ("-s", "mock-phone", "exec-out") or "pull" in call for call in self.device.calls))
         self.assertEqual(self.device.deleted, [])
+
+    def test_unverified_app_without_matching_scenario_offers_its_own_mode_command(self):
+        package = "example.camera"
+        self.device.versions = {package: "new"}
+        for scenario in ("example.clip", GALAXY_SCENARIO):
+            profile = replace(galaxy_camera.profile, package=package, scenario=scenario)
+            with self.subTest(scenario=scenario), patch.dict(APPS, {package: SimpleNamespace(profile=profile)}):
+                code, result = self.doctor("--app", package)
+                self.assertEqual((code, result["ready"]), (1, False))
+                self.assertIn(f"mode --list --app {package}", result["next_action"])
+                self.assertNotIn("verify-build", result["next_action"])
 
     def test_no_device_suggests_connect_from_mdns(self):
         self.device.listing = []

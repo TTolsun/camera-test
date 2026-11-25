@@ -12,7 +12,8 @@ import sys
 from . import adb as adb_module
 from . import preflight
 from .adb import Device, RunError
-from .guidance import DEFAULT_SCENARIO, PYZ, next_action
+from .apps import APPS, app_option
+from .guidance import PYZ, next_action
 from .scenarios import SCENARIOS
 
 MIN_PYTHON = (3, 10)
@@ -149,8 +150,7 @@ def check_device(device):
     return check("device", "ok", detail), info
 
 
-def check_camera_app(device):
-    profile = SCENARIOS[DEFAULT_SCENARIO].profile
+def check_camera_app(device, profile):
     try:
         version = device.package_version(profile.package)
     except RunError as exc:
@@ -159,14 +159,19 @@ def check_camera_app(device):
         return check("camera_app", "fail", f"{profile.package} 없음", next_action("CAMERA_APP_NOT_FOUND"))
     if profile.verifies(version):
         return check("camera_app", "ok", f"{version} (검증된 버전)")
-    context = {"scenario": DEFAULT_SCENARIO, "device": {"camera_version": version},
+    context = {"scenario": profile.scenario, "device": {"camera_version": version},
                "profile": profile.summary(version)}
-    return check("camera_app", "warn", f"{version} (검증 목록: {', '.join(profile.verified_versions)})",
-                 next_action("UNSUPPORTED_CAMERA_VERSION", context))
+    scenario = SCENARIOS.get(profile.scenario)
+    if scenario and scenario.profile.package == profile.package:
+        action = next_action("UNSUPPORTED_CAMERA_VERSION", context)
+    else:
+        action = (f"설치된 버전 {version}의 모드를 확인하려면 "
+                  f"`{PYZ} mode --list --app {profile.package}`에서 이름을 고른 뒤 "
+                  f"`{FIRST_RUN} --app {profile.package} --register-device`로 검사합니다.")
+    return check("camera_app", "warn", f"{version} (검증 목록: {', '.join(profile.verified_versions)})", action)
 
 
-def check_phone_state(device):
-    profile = SCENARIOS[DEFAULT_SCENARIO].profile
+def check_phone_state(device, profile):
     try:
         measured = preflight.measure(device, profile.package)
     except RunError as exc:
@@ -190,7 +195,7 @@ def run_doctor(args):
     checks = [check_python()]
     adb_check = check_adb()
     checks.append(adb_check)
-    serial = device = app = None
+    serial = None
     if adb_check["status"] == "fail":
         checks += [skipped(name, "adb") for name in ("devices", "device", "camera_app", "phone_state")]
     else:
@@ -205,20 +210,21 @@ def run_doctor(args):
             if device_check["status"] == "fail":
                 checks += [skipped(name, "device") for name in ("camera_app", "phone_state")]
             else:
-                app = check_camera_app(device)
-                checks += [app, check_phone_state(device)]
+                profile = APPS[args.app].profile
+                checks += [check_camera_app(device, profile), check_phone_state(device, profile)]
     by_name = {item["name"]: item for item in checks}
     ready = all(item["status"] in ("ok", "warn") for item in checks) and by_name["camera_app"]["status"] == "ok"
-    result = {"checks": checks, "ready": ready, "next_action": final_action(checks, ready, serial, args.device)}
+    result = {"checks": checks, "ready": ready, "next_action": final_action(checks, ready, serial, args.device, args.app)}
     return result, 0 if ready else 1
 
 
-def final_action(checks, ready, serial, requested):
+def final_action(checks, ready, serial, requested, package):
     if ready:
         suffix = f" --device {serial}" if requested else ""
+        option = app_option(package)
         busy = next((item for item in checks if item["name"] == "phone_state" and item["status"] == "warn"), None)
         prefix = "단말 앞 화면에 다른 앱이 있습니다. 쓰는 사람이 없는지 확인한 뒤 " if busy else ""
-        return f"{prefix}`{FIRST_RUN}{suffix}`의 <모드명>에 요청받은 이름을 넣어 실행합니다. 목록은 `{PYZ} mode --list`로 확인합니다."
+        return f"{prefix}`{FIRST_RUN}{suffix}{option}`의 <모드명>에 요청받은 이름을 넣어 실행합니다. 목록은 `{PYZ} mode --list{option}`로 확인합니다."
     # A failure comes first; otherwise the warnings that keep `run` from working (several phones, unverified app).
     blocking = next(item for item in checks if item["status"] == "fail" or
                     (item["status"] == "warn" and item["name"] in ("devices", "camera_app")))

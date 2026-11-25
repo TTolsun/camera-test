@@ -10,8 +10,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from .adb import Device, RunError, device_lock, select_device
-from . import doctor, media, mode, preflight, screens, suite, verify
-from .checks import load_checks, resolve_check
+from . import doctor, media, mode, preflight, screens, suite, verify_build
+from .apps import APPS, DEFAULT_PACKAGE
+from .log_checks import load_checks, resolve_check
 from .failures import failure_class
 from .guidance import PYZ, error_object, next_action
 from .hal import HalError, begin_trial, collected_trial, compare_logs, load_trial, log_tags, save_trial_logs
@@ -275,7 +276,7 @@ def run(args, checks, result, output):
                 text = device.logs(since, tags)
                 logs.write_text(text + "\n", encoding="utf-8")
                 result["artifacts"]["logcat"] = str(logs)
-                if result["scenario_status"] != "PASS":
+                if result["scenario_status"] != "PASS" and profile.record_state_pattern is not None:
                     result.setdefault("diagnosis", {})["record_state_log"] = record_state_stats(profile, text)
             except (RunError, OSError):
                 result["log_capture_error"] = "LOG_CAPTURE_FAILED"
@@ -558,15 +559,18 @@ def main():
     caps = commands.add_parser("capabilities", help="연결된 단말의 현재 카메라 버전에서 관찰하거나 검증한 모드를 조회합니다.")
     caps.add_argument("--device", help="조회할 단말의 ADB 일련번호입니다.")
     caps.add_argument("--json", action="store_true", help="결과를 JSON으로 출력합니다.")
+    for command in (health, suite_cmd, mode_cmd, caps):
+        command.add_argument("--app", choices=tuple(APPS), default=DEFAULT_PACKAGE,
+                             help="검사할 카메라 앱의 패키지 이름입니다. 기본값은 Galaxy Camera입니다.")
     args = parser.parse_args()
     if args.command == "capabilities":
         try:
-            result = mode.capabilities(args.device)
+            result = mode.capabilities(args.device, APPS[args.app])
         except (RunError, OSError) as exc:
             error = error_object(getattr(exc, "code", "IO_ERROR"), str(exc))
             print(json.dumps({"error": error}, ensure_ascii=False) if args.json else error["next_action"])
             return 3
-        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else mode.render_capabilities(result))
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else mode.render_capabilities(result, APPS[args.app]))
         return 0
     if args.command == "suite":
         return run_suite_command(args)
@@ -625,7 +629,7 @@ def main():
         if args.if_changed and not args.state_file:
             parser.error("--if-changed requires --state-file")
         try:
-            result, exit_code = verify.verify_build(args, run_once, VERSION)
+            result, exit_code = verify_build.verify_build(args, run_once, VERSION)
         except (RunError, OSError) as exc:
             result = {"error": error_object(getattr(exc, "code", "IO_ERROR"), str(exc)[:240])}
             exit_code = 1

@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import patch
 
 import camera_test
 from camera_runner import adb, failures, guidance
-from camera_runner.scenarios import galaxy_portrait_video
 from tests.mp4_builder import audio_track, mp4, video_track
-from tests.test_camera_scenarios import GALAXY_PACKAGE, GALAXY_SCENARIO, LAUNCHER_PACKAGE, OWNER_APP, MockCameraAdb
+from tests.camera_fixtures import GALAXY_PACKAGE, GALAXY_SCENARIO, LAUNCHER_PACKAGE, OWNER_APP, MockCameraAdb
 
 
 NEW_VERSION = "18.0.00.1"
@@ -29,9 +29,9 @@ class CliTestCase(unittest.TestCase):
     def cli(self, *arguments, slow=False):
         output = StringIO()
         with patch.object(sys, "argv", ["camera-test", *map(str, arguments)]), redirect_stdout(output), \
-                patch.object(adb, "adb", side_effect=self.device), patch.object(galaxy_portrait_video.time, "sleep"):
+                patch.object(adb, "adb", side_effect=self.device), patch.object(time, "sleep"):
             if slow:  # Every wait_for gives up after its first probe.
-                with patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+                with patch.object(time, "monotonic", side_effect=count(0, 5)):
                     code = camera_test.main()
             else:
                 code = camera_test.main()

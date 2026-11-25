@@ -1,4 +1,4 @@
-"""Run-scoped, read-only preview hierarchy capture for the camera suite."""
+"""Run-scoped, read-only preview hierarchy capture for Android camera capture."""
 
 from importlib.resources import as_file, files
 from pathlib import PurePosixPath
@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 from . import adb
 
 
-class SuiteDevice(adb.Device):
+class PreviewDevice(adb.Device):
     """Use a bundled UiAutomator test with no idle wait, and fall back to the standard dump."""
 
     def __init__(self, serial, run_id):

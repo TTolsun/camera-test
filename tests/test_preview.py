@@ -8,7 +8,7 @@ from unittest.mock import patch
 from zipfile import ZipFile
 
 from camera_runner import adb
-from camera_runner.preview import SuiteDevice
+from camera_runner.preview import PreviewDevice
 
 
 PACKAGE = "com.sec.android.app.camera"
@@ -65,7 +65,7 @@ class PreviewTests(unittest.TestCase):
     def test_preview_uses_fresh_xml_and_cleans_up_only_its_own_files(self):
         transport = PreviewTransport()
         transport.outputs = [VALID, VALID]
-        with patch.object(adb, "adb", side_effect=transport), SuiteDevice("phone", "unit") as device:
+        with patch.object(adb, "adb", side_effect=transport), PreviewDevice("phone", "unit") as device:
             self.assertEqual(device.ui().find("node").get("package"), PACKAGE)
             self.assertEqual(device.ui().find("node").get("package"), PACKAGE)
             self.assertEqual(device.last_ui, VALID)
@@ -81,7 +81,7 @@ class PreviewTests(unittest.TestCase):
                 transport = PreviewTransport()
                 transport.outputs = [output]
                 transport.run_result = result
-                with patch.object(adb, "adb", side_effect=transport), SuiteDevice("phone", "unit") as device:
+                with patch.object(adb, "adb", side_effect=transport), PreviewDevice("phone", "unit") as device:
                     self.assertEqual(device.ui().find("node").get("package"), PACKAGE)
                     self.assertEqual(device.ui_backends, {"standard"})
                     self.assertEqual(device.last_ui, VALID)

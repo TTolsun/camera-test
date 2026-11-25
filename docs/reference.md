@@ -22,9 +22,13 @@
 | `media inspect <mp4>` | 아니요 | MP4의 브랜드, 길이, 트랙 정보를 출력합니다. |
 | `hal begin/collect/compare` | 비교만 아니요 | Camera HAL 로그를 기능 OFF·ON으로 수집하고 비교합니다. |
 
+`doctor`, `mode`, `suite`, `capabilities`는 `--app <패키지명>`으로 등록된 카메라 앱을 선택합니다. 현재 배포본에 등록된 앱은 Galaxy Camera(`com.sec.android.app.camera`)이며, 옵션을 생략하면 이 앱을 사용합니다. `run`과 `verify-build`는 기존처럼 시나리오 이름으로 앱을 선택합니다.
+
 ## 단일 모드 결과
 
 `mode`와 `suite`에 `--register-device`를 붙이면 같은 실기기의 등록부를 사용합니다. 위치는 현재 작업 폴더의 `runs/devices/<단말 식별값의 해시>/registry.json`입니다. `suite --registry`로 지정하는 기존 모델별 등록부는 별도로 관리합니다. `capabilities`의 `observed`는 최근 저장된 모드 목록에 있었는지, `opened_run`과 `capture_run`은 각각 화면 진입과 촬영·저장을 확인한 실행 ID를 나타냅니다. `last`에는 최근 검사 결과가 남으므로, 이전 촬영 성공 후 재검사에 실패한 경우도 확인할 수 있습니다.
+
+등록부 형식 2는 모델, 앱 패키지, 앱 버전, 촬영 방향으로 항목을 구분합니다. 형식 1의 기록은 Galaxy Camera에서 생성한 기록으로 읽습니다. 조회 시에는 파일을 그대로 두고, 다음 등록이 성공할 때 파일 잠금 안에서 기존 기록과 새 기록을 함께 저장합니다.
 
 단일 모드 실행에서 `--open-only`를 지정하면 화면의 모드와 전·후면 방향을 확인한 뒤 `OPENED`를 반환합니다. 촬영 요청은 저장 파일을 검증한 뒤 `PASS`를 반환합니다. 두 경우 모두 성공 종료 코드는 0입니다. 연속 요청의 예시는 [README](../README.md#사내-agent에-모드-하나-요청하기)를 참고합니다.
 
@@ -167,7 +171,7 @@ MP4를 표준 라이브러리로 파싱합니다. `mdat`는 건너뛰므로 큰 
 | `flaky` | 위에 맞지 않는 통과·실패 혼합입니다. | `1` |
 | `unchanged` | `--if-changed`로 건너뛰었습니다. | `0` |
 
-`environment` 실패가 한 번 나오거나 `automation` 실패가 2회 연속 나오면 남은 반복을 건너뜁니다. 지표 회귀는 중앙값이 25%와 100ms를 모두 넘게 늘었을 때이며(`verify.py`의 `REGRESSION_RATIO`, `REGRESSION_MIN_MS`), `METRIC_REGRESSION` 경고만 추가합니다.
+`environment` 실패가 한 번 나오거나 `automation` 실패가 2회 연속 나오면 남은 반복을 건너뜁니다. 지표 회귀는 중앙값이 25%와 100ms를 모두 넘게 늘었을 때이며(`verify_build.py`의 `REGRESSION_RATIO`, `REGRESSION_MIN_MS`), `METRIC_REGRESSION` 경고만 추가합니다.
 
 ### 배치 폴더
 

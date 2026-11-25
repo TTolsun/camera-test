@@ -3,173 +3,18 @@ from io import StringIO
 import json
 from itertools import count
 from pathlib import Path
-import shlex
 import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import Mock, patch
 
 import camera_test
 from camera_runner import adb
 from camera_runner.profiles import parse_profile
-from camera_runner.scenarios import SCENARIOS, Scenario, galaxy_portrait_video
+from camera_runner.scenarios import SCENARIOS, Scenario
 from tests.mp4_builder import audio_track, mp4, video_track
-
-
-GALAXY_SCENARIO = "galaxy.portrait-video"
-GALAXY_PACKAGE = "com.sec.android.app.camera"
-LAUNCHER_PACKAGE = "com.sec.android.app.launcher"
-OWNER_APP = "com.sds.mchat"
-VIDEO_PATH = "/sdcard/DCIM/Camera/mock.mp4"
-STARTED = "11-21 09:10:02.350 1234 1234 I RecordingManager: changeRecordingState : STARTING -> RECORDING"
-STOPPED = "11-21 09:10:03.900 1234 1234 I RecordingManager: changeRecordingState : STOPPING -> IDLE"
-
-
-def node(resource, attributes=""):
-    return f'<node package="{GALAXY_PACKAGE}" resource-id="{GALAXY_PACKAGE}:id/{resource}" {attributes}/>'
-
-
-class MockCameraAdb:
-    def __init__(self):
-        self.versions = {GALAXY_PACKAGE: "17.0.00.43"}
-        self.mode = "photo"
-        self.taps = []
-        self.clocks = 0
-        self.record_taps = 0
-        self.renamed_ids = {}
-        self.wakefulness = "Awake"  # None omits the line, as an Android version without it would.
-        self.keyguard = "false"
-        self.free_kb = 10_000_000
-        self.launch_status = "Status: ok"
-        self.record_log = None  # Replaces the RecordingManager log lines when set.
-        self.deleted = []
-        self.rm_fails = False
-        self.ui_failures = 0  # Portrait Video dumps that fail before one succeeds.
-        self.video_bytes = b"mock"  # Content of the pulled MP4; its length is also the device file size.
-        self.events = []  # Order of device-file operations that matter to --cleanup-video.
-        self.top = LAUNCHER_PACKAGE  # Top resumed activity package; launching the camera replaces it.
-        self.launcher_output = f"priority=0 preferredOrder=0 match=0x108000\n{LAUNCHER_PACKAGE}/.LauncherActivity"
-        self.video_plan = []  # MP4 bytes for the next recordings, consumed in order as each recording stops.
-        self.files = []  # MP4s on the device: the first recording is VIDEO_PATH, later ones get their own names.
-        self.recordings = 0
-        self.commands = []  # Every shell command, to prove what a short-circuited command did not touch.
-        self.calls = []  # Every adb invocation (args tuple), including exec-out and pull.
-        self.listing = [("mock-phone", "device")]  # (serial, state) rows of `adb devices`.
-        self.other_hardware = {}  # Hardware serial answered for listed serials other than mock-phone.
-        self.mdns = "List of discovered mdns services\n"
-        self.adb_version = "Android Debug Bridge version 1.0.41\nVersion 35.0.2-12147458\nInstalled as C:\\adb.exe"
-
-    def hierarchy(self):
-        if self.mode == "portrait":
-            nodes = node("shooting_mode_portrait_video_main") + node(
-                "center_button_container", 'content-desc="Start recording" enabled="true" clickable="true" bounds="[0,0][10,10]"'
-            )
-        else:
-            nodes = node("shooting_mode_list", f'content-desc="{self.mode.title()}, mode"')
-            nodes += node("shooting_mode_item_button", 'text="More" bounds="[10,10][20,20]"')
-            nodes += node("shooting_mode_item_button", 'text="Photo" bounds="[20,20][30,30]"')
-            if self.mode == "more":
-                nodes += node("more_grid_list_text", 'text="Portrait Video" bounds="[30,30][40,40]"')
-        for old, new in self.renamed_ids.items():
-            nodes = nodes.replace(f'id/{old}"', f'id/{new}"')
-        return f"<hierarchy>{nodes}</hierarchy>"
-
-    def __call__(self, *args, **kwargs):
-        self.calls.append(args)
-        if args == ("version",):
-            return self.adb_version
-        if args == ("devices",):
-            return "List of devices attached\n" + "".join(f"{serial}\t{state}\n" for serial, state in self.listing)
-        if args == ("devices", "-l"):
-            return "List of devices attached\n" + "".join(
-                f"{serial:<22} {state} product:mock model:Mock_Galaxy device:mock transport_id:{index}\n"
-                for index, (serial, state) in enumerate(self.listing, 1))
-        if args == ("mdns", "services"):
-            return self.mdns
-        if args[0] == "-s" and args[1] in self.other_hardware:
-            assert args[2:] == ("shell", "getprop ro.serialno"), args
-            return self.other_hardware[args[1]]
-        assert args[:2] == ("-s", "mock-phone"), args
-        if args[2] == "exec-out":
-            return b""
-        if args[2] == "pull":
-            assert args[3] in self.files and kwargs["timeout"] == 60
-            Path(args[4]).write_bytes(self.video_bytes)
-            self.events.append("pull")
-            return ""
-        assert args[2] == "shell", args
-        remote = shlex.split(args[3])
-        self.commands.append(remote)
-        if remote == ["getprop", "ro.serialno"]:
-            return "mock-hardware"
-        if remote == ["getprop"]:
-            return "[ro.product.model]: [Mock Galaxy]\n[ro.soc.manufacturer]: [Exynos]"
-        if remote[:2] == ["dumpsys", "package"]:
-            version = self.versions.get(remote[2])
-            return f"    versionName={version}" if version else ""
-        if remote == ["dumpsys", "activity", "activities"]:
-            return f"    topResumedActivity=ActivityRecord{{1 u0 {self.top}/.Main t7}}"
-        if remote[:3] == ["cmd", "package", "resolve-activity"]:
-            assert remote[3:] == ["--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]
-            return self.launcher_output
-        if remote[:2] == ["am", "start"]:
-            assert remote[-1] == f"{GALAXY_PACKAGE}/.Camera"
-            self.clocks = 1  # Each run reads its first clock before it launches the camera.
-            if self.launch_status == "Status: ok":
-                self.top = GALAXY_PACKAGE
-            return self.launch_status
-        if remote[:2] == ["input", "tap"]:
-            point = tuple(remote[2:])
-            self.taps.append(point)
-            if point == ("5", "5"):
-                self.record_taps += 1
-                if self.record_taps % 2 == 0:
-                    self.files.append(VIDEO_PATH if not self.recordings else f"/sdcard/DCIM/Camera/mock{self.recordings}.mp4")
-                    self.recordings += 1
-                    if self.video_plan:
-                        self.video_bytes = self.video_plan.pop(0)
-            else:
-                self.mode = {("15", "15"): "more", ("25", "25"): "photo", ("35", "35"): "portrait"}[point]
-            return ""
-        if remote[0] == "date":
-            self.clocks += 1
-            return f"11-21 09:10:{self.clocks:02d}.100"
-        if remote[0] == "pidof":
-            return "1234"
-        if remote[0] == "logcat":
-            if "ExampleHal:V" in remote and "RecordingManager:V" not in remote:
-                return "11-21 09:10:12.000 2222 2222 I ExampleHal: feature_applied=true"
-            if self.record_log is not None:
-                return self.record_log
-            return STOPPED if remote[3] == "11-21 09:10:03.100" else STARTED
-        if remote[:3] == ["stat", "-c", "%s"] and remote[3] in self.files:
-            return str(len(self.video_bytes))
-        if remote[0] == "df":
-            assert remote[1:] == ["-k", "/sdcard"]
-            return ("Filesystem     1K-blocks    Used Available Use% Mounted on\n"
-                    f"/dev/fuse      481226752 1000 {self.free_kb} 46% /storage/emulated")
-        if remote[:2] == ["sh", "-c"]:
-            if remote[2].startswith("dumpsys power | "):
-                return f"  mWakefulness={self.wakefulness}" if self.wakefulness else ""
-            if remote[2].startswith("dumpsys window | "):
-                return f"    isKeyguardShowing={self.keyguard}" if self.keyguard else ""
-            if remote[2].startswith("rm "):
-                if self.rm_fails:
-                    raise adb.RunError("ADB_ERROR", "rm failed")
-                self.deleted.append(shlex.split(remote[2])[1])
-                self.files.remove(self.deleted[-1])
-                self.events.append("rm")
-                return "deleted"
-            if remote[2].startswith("uiautomator dump "):
-                if self.mode == "portrait" and self.ui_failures:
-                    self.ui_failures -= 1
-                    return "ERROR: could not get idle state."
-                return self.hierarchy()
-            if remote[2].startswith("dumpsys media.camera | "):
-                return "Number of camera devices: 1"
-            if "find /sdcard/DCIM/Camera" in remote[2]:
-                return "\n".join(self.files)
-        raise AssertionError(remote)
+from tests.camera_fixtures import GALAXY_SCENARIO, GALAXY_PACKAGE, OWNER_APP, VIDEO_PATH, STARTED, node, MockCameraAdb
 
 
 class ScenarioCliTests(unittest.TestCase):
@@ -215,7 +60,7 @@ class ScenarioCliTests(unittest.TestCase):
                          "Rerun with --allow-unverified-version to verify it.")
         self.assertEqual(self.device.record_taps, 0)
 
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--allow-unverified-version")
         self.assertEqual((code, result["scenario_status"], result["warnings"]), (0, "PASS", ["UNVERIFIED_CAMERA_VERSION"]))
         self.assertFalse(result["profile"]["version_verified"])
@@ -231,8 +76,8 @@ class ScenarioCliTests(unittest.TestCase):
         # A new app build renames the Portrait Video marker; nothing else changes.
         self.device.versions[GALAXY_PACKAGE] = "18.0.00.1"
         self.device.renamed_ids = {"shooting_mode_portrait_video_main": "shooting_mode_portrait_video_main_v2"}
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"), \
-                patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"), \
+                patch.object(time, "monotonic", side_effect=count(0, 5)):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--allow-unverified-version")
             self.assertEqual((code, result["error"]["code"]), (1, "MODE_NOT_READY"))
             self.assertTrue(Path(result["artifacts"]["failure_ui"]).is_file())
@@ -241,7 +86,7 @@ class ScenarioCliTests(unittest.TestCase):
         self.assertIn("record_button", diagnosis["ui"]["present"])
         self.assertEqual(diagnosis["record_state_log"], {"tag": "RecordingManager", "lines": 1, "matched": 1})
 
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"):
             profile = Path(output) / "galaxy-18.json"
             self.assertEqual(self.cli("profile", "show", GALAXY_SCENARIO, "--output", profile)[0], 0)
             data = json.loads(profile.read_text(encoding="utf-8"))
@@ -284,7 +129,7 @@ class ScenarioCliTests(unittest.TestCase):
             self.assertEqual((code, result["error"]["code"], self.device.taps), (1, "INVALID_PROFILE_FILE", []))
 
     def test_galaxy_run_records_video_and_checks_hal_logs(self):
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"):
             checks = Path(output) / "checks.json"
             checks.write_text(json.dumps({"schema_version": 1, "checks": [{
                 "name": "mock-feature", "source": "hal", "vendor": "exynos", "tag": "ExampleHal", "expect_log": "feature_applied=true",
@@ -365,9 +210,9 @@ class EfficiencyCliTests(unittest.TestCase):
         return code, json.loads(output.getvalue())
 
     def run_scenario(self, *extra, slow=False):
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"):
             if slow:  # Every wait_for gives up after its first probe.
-                with patch.object(galaxy_portrait_video.time, "monotonic", side_effect=count(0, 5)):
+                with patch.object(time, "monotonic", side_effect=count(0, 5)):
                     return self.cli("run", GALAXY_SCENARIO, "--output-dir", output, *extra)
             return self.cli("run", GALAXY_SCENARIO, "--output-dir", output, *extra)
 
@@ -440,7 +285,7 @@ class EfficiencyCliTests(unittest.TestCase):
         self.assertTrue(diagnosis["ui"]["resource_ids"])
 
     def test_capture_promote_compare_round_trip(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
             self.assertEqual((code, result["screens"]), (0, ["initial", "more_opened", "mode_ready"]))
             run_dir = Path(result["artifacts"]["result"]).parent
@@ -503,7 +348,7 @@ class EfficiencyCliTests(unittest.TestCase):
             self.assertEqual(report["checkpoints"]["initial"]["severity"], "cosmetic")
 
     def test_promote_refuses_failed_runs_and_runs_without_screens(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root)
             run_dir = Path(result["artifacts"]["result"]).parent
             code, result = self.cli("screens", "promote", "--run", run_dir, "--output", Path(root) / "g")
@@ -515,7 +360,7 @@ class EfficiencyCliTests(unittest.TestCase):
             self.assertEqual(result["error"]["code"], "RUN_NOT_PASSED")
 
     def test_run_with_golden_attaches_drift_without_changing_the_verdict(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
             golden = Path(root) / "golden"
             self.cli("screens", "promote", "--run", Path(result["artifacts"]["result"]).parent, "--output", golden)
@@ -557,7 +402,7 @@ class EfficiencyCliTests(unittest.TestCase):
         return self.cli("run", GALAXY_SCENARIO, "--output-dir", root, *extra)
 
     def test_volatile_id_is_ignored_by_drift_comparison(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             golden = self.golden_from_photo_run(root)
             self.assertIn("guide_text", SCENARIOS[GALAXY_SCENARIO].profile.volatile_ids)
             self.device = MockCameraAdb()
@@ -572,7 +417,7 @@ class EfficiencyCliTests(unittest.TestCase):
             self.assertNotIn("warnings", result)
 
     def test_cosmetic_drift_adds_no_warning_but_breaking_does(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             golden = self.golden_from_photo_run(root)
             self.device = MockCameraAdb()
             self.device.mode = "portrait"
@@ -608,7 +453,7 @@ class EfficiencyCliTests(unittest.TestCase):
             self.assertTrue(self.cli("profile", "validate", profile)[1]["valid"])
 
     def test_promote_merge_adds_checkpoints_of_the_other_start_state(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             golden = self.golden_from_photo_run(root)
             before = (golden / "mode_ready.json").read_text(encoding="utf-8")
             code, result = self.captured_portrait_run(root, "--capture-screens")
@@ -644,7 +489,7 @@ class EfficiencyCliTests(unittest.TestCase):
         self.assertEqual(result["preflight"]["lock"], "locked")
 
     def test_golden_from_photo_start_does_not_flag_a_run_that_starts_in_portrait_video(self):
-        with TemporaryDirectory() as root, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as root, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", root, "--capture-screens")
             golden = Path(root) / "golden"
             self.cli("screens", "promote", "--run", Path(result["artifacts"]["result"]).parent, "--output", golden)
@@ -695,7 +540,7 @@ class EfficiencyCliTests(unittest.TestCase):
 
     def test_verify_media_passes_and_removes_the_local_copy_without_pull_video(self):
         self.device.video_bytes = mp4([video_track(5.2), audio_track(5.2)], seconds=5.2)
-        with TemporaryDirectory() as output, patch.object(galaxy_portrait_video.time, "sleep"):
+        with TemporaryDirectory() as output, patch.object(time, "sleep"):
             code, result = self.cli("run", GALAXY_SCENARIO, "--output-dir", output, "--verify-media")
             self.assertEqual((code, result["scenario_status"]), (0, "PASS"))
             self.assertEqual(result["media"]["checks"], {"video_track": "PASS", "frames": "PASS", "duration": "PASS", "audio": "PASS"})
@@ -753,7 +598,7 @@ class EfficiencyCliTests(unittest.TestCase):
     def test_metric_that_cannot_be_computed_is_omitted(self):
         # A log stamped before the device clock (for example across New Year) cannot give a latency.
         stamped_early = STARTED.replace("09:10:02.350", "09:09:00.000")
-        with patch.object(sys.modules[__name__], "STARTED", stamped_early):
+        with patch("tests.camera_fixtures.STARTED", stamped_early):
             code, result = self.run_scenario()
         self.assertEqual(code, 0)
         self.assertNotIn("record_start_latency_ms", result["metrics"])
